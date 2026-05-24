@@ -30,11 +30,157 @@ test("getWebDefaultSettings enables remote settings from the gateway token", () 
   installWindow("https://gateway.example");
 
   const settings = webSettings.getWebDefaultSettings(" token ");
-  assert.equal(settings.system.executionMode, "agent-dev");
+  assert.equal(settings.system.executionMode, "tools");
   assert.equal(settings.system.workdir, "");
   assert.equal(settings.remote.enabled, true);
   assert.equal(settings.remote.gatewayUrl, "https://gateway.example");
   assert.equal(settings.remote.token, "token");
+});
+
+test("web chat runtime controls default and follow provider reasoning support", () => {
+  installWindow("https://gateway.example");
+
+  const defaults = webSettings.getWebDefaultSettings(" token ");
+  assert.deepEqual(defaults.chatRuntimeControls, {
+    thinkingEnabled: true,
+    nativeWebSearchEnabled: true,
+    reasoning: "high",
+    reasoningByProvider: {
+      claude_code: "high",
+      codex_openai_responses: "high",
+      codex_openai_completions: "high",
+      gemini: "high",
+    },
+  });
+
+  assert.deepEqual(settings.getChatRuntimeReasoningLevelsForProvider({}), [
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+  ]);
+  assert.deepEqual(settings.getChatRuntimeReasoningLevelsForProvider({ providerId: "claude_code" }), [
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+  ]);
+  assert.deepEqual(
+    settings.getChatRuntimeReasoningLevelsForProvider({
+      providerId: "codex",
+      requestFormat: "openai-responses",
+    }),
+    ["minimal", "low", "medium", "high", "xhigh"],
+  );
+  assert.deepEqual(
+    settings.getChatRuntimeReasoningLevelsForProvider({
+      providerId: "codex",
+      requestFormat: "openai-completions",
+    }),
+    [],
+  );
+  assert.deepEqual(settings.getChatRuntimeReasoningLevelsForProvider({ providerId: "gemini" }), [
+    "minimal",
+    "low",
+    "medium",
+    "high",
+  ]);
+
+  assert.deepEqual(
+    settings.normalizeChatRuntimeControlsForProvider(
+      {
+        thinkingEnabled: false,
+        nativeWebSearchEnabled: false,
+        reasoning: "xhigh",
+        reasoningByProvider: {
+          gemini: "xhigh",
+        },
+      },
+      { providerId: "gemini" },
+    ),
+    {
+      thinkingEnabled: false,
+      nativeWebSearchEnabled: false,
+      reasoning: "high",
+      reasoningByProvider: {
+        claude_code: "xhigh",
+        codex_openai_responses: "xhigh",
+        codex_openai_completions: "high",
+        gemini: "high",
+      },
+    },
+  );
+  assert.deepEqual(
+    settings.normalizeChatRuntimeControlsForProvider(
+      {
+        thinkingEnabled: true,
+        nativeWebSearchEnabled: true,
+        reasoning: "xhigh",
+        reasoningByProvider: {
+          codex_openai_completions: "xhigh",
+        },
+      },
+      { providerId: "codex", requestFormat: "openai-completions" },
+    ),
+    {
+      thinkingEnabled: true,
+      nativeWebSearchEnabled: true,
+      reasoning: "high",
+      reasoningByProvider: {
+        claude_code: "xhigh",
+        codex_openai_responses: "xhigh",
+        codex_openai_completions: "high",
+        gemini: "high",
+      },
+    },
+  );
+
+  assert.deepEqual(
+    settings.updateChatRuntimeControlsForProvider(
+      defaults.chatRuntimeControls,
+      { reasoning: "xhigh" },
+      { providerId: "codex", requestFormat: "openai-responses" },
+    ),
+    {
+      thinkingEnabled: true,
+      nativeWebSearchEnabled: true,
+      reasoning: "xhigh",
+      reasoningByProvider: {
+        claude_code: "high",
+        codex_openai_responses: "xhigh",
+        codex_openai_completions: "high",
+        gemini: "high",
+      },
+    },
+  );
+  assert.equal(
+    settings.normalizeChatRuntimeControlsForProvider(
+      {
+        ...defaults.chatRuntimeControls,
+        reasoningByProvider: {
+          ...defaults.chatRuntimeControls.reasoningByProvider,
+          claude_code: "xhigh",
+          gemini: "low",
+        },
+      },
+      { providerId: "claude_code" },
+    ).reasoning,
+    "xhigh",
+  );
+  assert.equal(
+    settings.normalizeChatRuntimeControlsForProvider(
+      {
+        ...defaults.chatRuntimeControls,
+        reasoningByProvider: {
+          ...defaults.chatRuntimeControls.reasoningByProvider,
+          claude_code: "xhigh",
+          gemini: "low",
+        },
+      },
+      { providerId: "gemini" },
+    ).reasoning,
+    "low",
+  );
 });
 
 test("loadWebSettings forces current gateway URL/token over stale persisted remote settings", () => {
@@ -61,18 +207,36 @@ test("gateway settings sync payload excludes remote settings and applies selecte
       workdir: "/remote-workdir",
       selectedSystemTools: ["http_get_test"],
     },
+    chatRuntimeControls: {
+      thinkingEnabled: false,
+      nativeWebSearchEnabled: false,
+      reasoning: "minimal",
+      reasoningByProvider: {
+        claude_code: "minimal",
+        codex_openai_responses: "minimal",
+        codex_openai_completions: "high",
+        gemini: "xhigh",
+      },
+    },
     selectedModel: null,
   });
 
   assert.equal(synced.system.executionMode, "tools");
   assert.equal(synced.system.workdir, "/remote-workdir");
   assert.deepEqual(synced.system.selectedSystemTools, ["http_get_test"]);
+  assert.equal(synced.chatRuntimeControls.thinkingEnabled, false);
+  assert.equal(synced.chatRuntimeControls.nativeWebSearchEnabled, false);
+  assert.equal(synced.chatRuntimeControls.reasoning, "minimal");
+  assert.equal(synced.chatRuntimeControls.reasoningByProvider.claude_code, "high");
+  assert.equal(synced.chatRuntimeControls.reasoningByProvider.codex_openai_responses, "minimal");
+  assert.equal(synced.chatRuntimeControls.reasoningByProvider.gemini, "high");
   assert.equal(synced.selectedModel, undefined);
   assert.equal(synced.remote.gatewayUrl, "https://gateway.example");
   assert.equal(synced.remote.token, "token");
 
   const payload = settingsSync.buildGatewaySettingsSyncPayload(synced);
   assert.equal(Object.hasOwn(payload, "remote"), false);
+  assert.deepEqual(payload.chatRuntimeControls, synced.chatRuntimeControls);
 });
 
 test("web remote settings normalize single-slash http gateway URLs", () => {
@@ -112,4 +276,21 @@ test("web cron task normalization preserves finite and exhausted run counts", ()
     remainingExecutions: "-1",
   });
   assert.equal(invalid.remainingExecutions, undefined);
+});
+
+test("web provider normalization keeps native web search toggle", () => {
+  const enabledByDefault = settings.normalizeCustomProvider({
+    id: "provider-enabled",
+    type: "codex",
+    baseUrl: "https://api.openai.com/v1",
+  });
+  assert.equal(enabledByDefault.nativeWebSearchEnabled, true);
+
+  const disabled = settings.normalizeCustomProvider({
+    id: "provider-disabled",
+    type: "gemini",
+    baseUrl: "https://generativelanguage.googleapis.com/v1beta",
+    nativeWebSearchEnabled: false,
+  });
+  assert.equal(disabled.nativeWebSearchEnabled, false);
 });
