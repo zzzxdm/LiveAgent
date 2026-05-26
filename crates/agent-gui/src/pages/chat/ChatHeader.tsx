@@ -1,4 +1,4 @@
-import { memo, useEffect, useRef, type ReactNode, useState } from "react";
+import { memo, type ReactNode, useEffect, useRef, useState } from "react";
 import {
   Check,
   ChevronDown,
