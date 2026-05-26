@@ -1,8 +1,7 @@
-import { type ReactNode } from "react";
 import { Popover } from "@base-ui/react";
-import { AlertTriangle } from "../icons";
-
+import type { ReactNode } from "react";
 import { useLocale } from "../../i18n";
+import { AlertTriangle } from "../icons";
 import { Button } from "./button";
 
 export function ConfirmActionPopover(props: {
@@ -20,8 +19,8 @@ export function ConfirmActionPopover(props: {
       {/* Pass no-op — Popover.Trigger merges its own click handler via render prop */}
       <Popover.Trigger render={children(() => {}) as React.ReactElement} />
       <Popover.Portal>
-        <Popover.Positioner side="bottom" align="end" sideOffset={6}>
-          <Popover.Popup className="z-50 w-64 rounded-xl border border-border bg-popover shadow-lg outline-none data-[open]:animate-in data-[closed]:animate-out data-[closed]:fade-out-0 data-[open]:fade-in-0 data-[closed]:zoom-out-95 data-[open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-1 data-[side=top]:slide-in-from-bottom-1">
+        <Popover.Positioner side="bottom" align="end" sideOffset={6} className="z-[9999]">
+          <Popover.Popup className="w-64 rounded-xl border border-border bg-popover shadow-lg outline-none data-[open]:animate-in data-[closed]:animate-out data-[closed]:fade-out-0 data-[open]:fade-in-0 data-[closed]:zoom-out-95 data-[open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-1 data-[side=top]:slide-in-from-bottom-1">
             <div className="p-3">
               <div className="flex items-start gap-2.5">
                 <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-destructive/10">
@@ -36,9 +35,7 @@ export function ConfirmActionPopover(props: {
               </div>
               <div className="mt-3 flex justify-end gap-2">
                 <Popover.Close
-                  render={
-                    <Button variant="outline" size="sm" className="h-7 px-2.5 text-xs" />
-                  }
+                  render={<Button variant="outline" size="sm" className="h-7 px-2.5 text-xs" />}
                 >
                   {t("settings.cancel")}
                 </Popover.Close>

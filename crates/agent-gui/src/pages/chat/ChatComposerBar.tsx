@@ -1,17 +1,19 @@
-import {
-  memo,
-  useEffect,
-  useState,
-  type MutableRefObject,
-  type ReactNode,
-} from "react";
-import { Brain, Globe2, Lightbulb, Loader2, Paperclip, Send, Square, X } from "../../components/icons";
-
+import { type MutableRefObject, memo, type ReactNode, useEffect, useState } from "react";
 import {
   MentionComposer,
   type MentionComposerHandle,
   type MentionComposerSkill,
 } from "../../components/chat/MentionComposer";
+import {
+  Brain,
+  Globe2,
+  Lightbulb,
+  Loader2,
+  Paperclip,
+  Send,
+  Square,
+  X,
+} from "../../components/icons";
 import { Button } from "../../components/ui/button";
 import {
   Select,
@@ -25,12 +27,12 @@ import {
   formatUploadedFileSize,
   type PendingUploadedFile,
 } from "../../lib/chat/messages/uploadedFiles";
-import { cn } from "../../lib/shared/utils";
 import {
-  DEFAULT_CHAT_RUNTIME_CONTROLS,
   type ChatRuntimeControls,
+  DEFAULT_CHAT_RUNTIME_CONTROLS,
   type ReasoningLevel,
 } from "../../lib/settings";
+import { cn } from "../../lib/shared/utils";
 
 const REASONING_I18N_KEYS: Record<ReasoningLevel, string> = {
   off: "settings.reasoning.off",
@@ -97,7 +99,8 @@ export const ChatComposerBar = memo(function ChatComposerBar(props: {
   } = props;
   const { t } = useLocale();
   const [composerIsEmpty, setComposerIsEmpty] = useState(true);
-  const uploadDisabled = isInputDisabled || isSending || isUploadingFiles || !isAgentMode || !workdir;
+  const uploadDisabled =
+    isInputDisabled || isSending || isUploadingFiles || !isAgentMode || !workdir;
   const controlsDisabled = isInputDisabled || isSending;
   const thinkingSupported = reasoningOptions.length > 0;
   const sendDisabled =
@@ -114,10 +117,7 @@ export const ChatComposerBar = memo(function ChatComposerBar(props: {
   const webSearchTooltip = t("chat.runtime.webSearchTooltip");
 
   useEffect(() => {
-    if (
-      reasoningOptions.length > 0 &&
-      reasoningOptions.includes(chatRuntimeControls.reasoning)
-    ) {
+    if (reasoningOptions.length > 0 && reasoningOptions.includes(chatRuntimeControls.reasoning)) {
       return;
     }
     if (
@@ -205,10 +205,10 @@ export const ChatComposerBar = memo(function ChatComposerBar(props: {
                     isUploadingFiles
                       ? t("chat.upload.uploading")
                       : !isAgentMode
-                      ? t("chat.upload.onlyInTools")
-                      : !workdir
-                        ? t("chat.upload.requireWorkdir")
-                        : t("chat.upload.selectFiles")
+                        ? t("chat.upload.onlyInTools")
+                        : !workdir
+                          ? t("chat.upload.requireWorkdir")
+                          : t("chat.upload.selectFiles")
                   }
                   className={cn(
                     "composer-toolbar-action relative inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full outline-hidden transition-colors",
