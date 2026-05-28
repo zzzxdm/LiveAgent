@@ -5,6 +5,8 @@ import { Terminal as XTerm } from "@xterm/xterm";
 import {
   type CSSProperties,
   type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
+  type WheelEvent as ReactWheelEvent,
   useCallback,
   useEffect,
   useMemo,
@@ -39,6 +41,7 @@ const MIN_PANEL_WIDTH = 320;
 const MAX_PANEL_WIDTH = 720;
 const DEFAULT_TERMINAL_COLS = 80;
 const DEFAULT_TERMINAL_ROWS = 24;
+const FILE_TREE_TAB_ID = "__file_tree__";
 
 type ProjectToolsPanelProps = {
   isOpen: boolean;
@@ -366,6 +369,10 @@ function utf8ByteLengthOfCodePoint(value: string) {
   return 4;
 }
 
+function clampScrollLeft(value: number, max: number) {
+  return Math.min(max, Math.max(0, value));
+}
+
 export function ProjectToolsPanel(props: ProjectToolsPanelProps) {
   const {
     isOpen,
@@ -409,6 +416,15 @@ export function ProjectToolsPanel(props: ProjectToolsPanelProps) {
   const resizeFrameRef = useRef<number | null>(null);
   const resizingRef = useRef(false);
   const resizeCleanupRef = useRef<(() => void) | null>(null);
+  const tabsScrollRef = useRef<HTMLDivElement | null>(null);
+  const tabsScrollbarDragRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startScrollLeft: number;
+    trackWidth: number;
+    thumbWidth: number;
+    maxScrollLeft: number;
+  } | null>(null);
   const panelWidth = Math.min(MAX_PANEL_WIDTH, Math.max(MIN_PANEL_WIDTH, draftWidth));
   const panelStyle = { "--project-tools-panel-width": `${panelWidth}px` } as CSSProperties;
   const isControlled = externalSessions !== undefined;
@@ -425,6 +441,63 @@ export function ProjectToolsPanel(props: ProjectToolsPanelProps) {
     () => sessions.find((session) => session.id === pendingCloseSessionId) ?? null,
     [pendingCloseSessionId, sessions],
   );
+  const [tabsScrollState, setTabsScrollState] = useState({
+    clientWidth: 0,
+    scrollLeft: 0,
+    scrollWidth: 0,
+  });
+  const [tabsScrollbarDragging, setTabsScrollbarDragging] = useState(false);
+  const tabsMaxScrollLeft = Math.max(
+    0,
+    tabsScrollState.scrollWidth - tabsScrollState.clientWidth,
+  );
+  const tabsHaveOverflow = tabsMaxScrollLeft > 1;
+  const tabsThumbWidth =
+    tabsHaveOverflow && tabsScrollState.scrollWidth > 0
+      ? Math.max(
+          28,
+          Math.min(
+            tabsScrollState.clientWidth,
+            (tabsScrollState.clientWidth / tabsScrollState.scrollWidth) *
+              tabsScrollState.clientWidth,
+          ),
+        )
+      : tabsScrollState.clientWidth;
+  const tabsThumbOffset =
+    tabsHaveOverflow && tabsMaxScrollLeft > 0
+      ? (tabsScrollState.scrollLeft / tabsMaxScrollLeft) *
+        Math.max(0, tabsScrollState.clientWidth - tabsThumbWidth)
+      : 0;
+  const tabsScrollbarThumbStyle = {
+    transform: `translateX(${tabsThumbOffset}px)`,
+    width: `${tabsThumbWidth}px`,
+  } as CSSProperties;
+
+  const updateTabsScrollState = useCallback(() => {
+    const element = tabsScrollRef.current;
+    const next = element
+      ? {
+          clientWidth: element.clientWidth,
+          scrollLeft: element.scrollLeft,
+          scrollWidth: element.scrollWidth,
+        }
+      : {
+          clientWidth: 0,
+          scrollLeft: 0,
+          scrollWidth: 0,
+        };
+
+    setTabsScrollState((current) => {
+      if (
+        Math.abs(current.clientWidth - next.clientWidth) < 1 &&
+        Math.abs(current.scrollLeft - next.scrollLeft) < 1 &&
+        Math.abs(current.scrollWidth - next.scrollWidth) < 1
+      ) {
+        return current;
+      }
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     const previousFileTreeInitialized = previousFileTreeInitializedRef.current;
@@ -489,6 +562,59 @@ export function ProjectToolsPanel(props: ProjectToolsPanelProps) {
     pendingResizeWidthRef.current = clampedWidth;
     setDraftWidth(clampedWidth);
   }, [clampedWidth]);
+
+  useEffect(() => {
+    updateTabsScrollState();
+    const element = tabsScrollRef.current;
+    if (!element) return;
+
+    let frameId = 0;
+    const scheduleUpdate = () => {
+      if (frameId !== 0) return;
+      frameId = window.requestAnimationFrame(() => {
+        frameId = 0;
+        updateTabsScrollState();
+      });
+    };
+    const resizeObserver =
+      typeof ResizeObserver === "undefined" ? null : new ResizeObserver(scheduleUpdate);
+    resizeObserver?.observe(element);
+    Array.from(element.children).forEach((child) => {
+      if (child instanceof HTMLElement) {
+        resizeObserver?.observe(child);
+      }
+    });
+    scheduleUpdate();
+
+    return () => {
+      if (frameId !== 0) {
+        window.cancelAnimationFrame(frameId);
+      }
+      resizeObserver?.disconnect();
+    };
+  }, [
+    activeSessionId,
+    currentActiveTab,
+    fileTreeInitialized,
+    isOpen,
+    panelWidth,
+    sessions,
+    shellOptions.length,
+    updateTabsScrollState,
+  ]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const element = tabsScrollRef.current;
+    if (!element) return;
+    const targetTabId = currentActiveTab === "fileTree" ? FILE_TREE_TAB_ID : activeSession?.id;
+    if (!targetTabId) return;
+    const target = Array.from(
+      element.querySelectorAll<HTMLElement>("[data-project-tools-tab-id]"),
+    ).find((node) => node.dataset.projectToolsTabId === targetTabId);
+    target?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    window.requestAnimationFrame(updateTabsScrollState);
+  }, [activeSession?.id, currentActiveTab, isOpen, updateTabsScrollState]);
 
   useEffect(() => {
     return () => {
@@ -724,6 +850,103 @@ export function ProjectToolsPanel(props: ProjectToolsPanelProps) {
     [clampedWidth, onWidthChange, panelWidth],
   );
 
+  const handleTabsWheel = useCallback(
+    (event: ReactWheelEvent<HTMLDivElement>) => {
+      const element = tabsScrollRef.current;
+      if (!element) return;
+      const maxScrollLeft = element.scrollWidth - element.clientWidth;
+      if (maxScrollLeft <= 1) return;
+
+      const delta =
+        Math.abs(event.deltaX) >= Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
+      if (delta === 0) return;
+
+      const nextScrollLeft = clampScrollLeft(element.scrollLeft + delta, maxScrollLeft);
+      if (Math.abs(nextScrollLeft - element.scrollLeft) < 1) return;
+
+      event.preventDefault();
+      element.scrollLeft = nextScrollLeft;
+      updateTabsScrollState();
+    },
+    [updateTabsScrollState],
+  );
+
+  const handleTabsScrollbarPointerDown = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      if (event.button !== 0 || !tabsHaveOverflow) return;
+      const element = tabsScrollRef.current;
+      if (!element) return;
+
+      event.preventDefault();
+      const track = event.currentTarget;
+      const rect = track.getBoundingClientRect();
+      const maxScrollLeft = Math.max(0, element.scrollWidth - element.clientWidth);
+      const thumbWidth =
+        maxScrollLeft > 0 && element.scrollWidth > 0
+          ? Math.max(
+              28,
+              Math.min(
+                rect.width,
+                (element.clientWidth / element.scrollWidth) * rect.width,
+              ),
+            )
+          : rect.width;
+      const travelWidth = Math.max(1, rect.width - thumbWidth);
+      const clickedThumb =
+        event.target instanceof HTMLElement &&
+        event.target.closest(".project-tools-panel-tabs-scrollbar-thumb") !== null;
+      const nextScrollLeft = clickedThumb
+        ? element.scrollLeft
+        : clampScrollLeft(
+            ((event.clientX - rect.left - thumbWidth / 2) / travelWidth) * maxScrollLeft,
+            maxScrollLeft,
+          );
+
+      element.scrollLeft = nextScrollLeft;
+      tabsScrollbarDragRef.current = {
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startScrollLeft: nextScrollLeft,
+        trackWidth: rect.width,
+        thumbWidth,
+        maxScrollLeft,
+      };
+      setTabsScrollbarDragging(true);
+      track.setPointerCapture(event.pointerId);
+      updateTabsScrollState();
+    },
+    [tabsHaveOverflow, updateTabsScrollState],
+  );
+
+  const handleTabsScrollbarPointerMove = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      const dragState = tabsScrollbarDragRef.current;
+      const element = tabsScrollRef.current;
+      if (!dragState || !element || dragState.pointerId !== event.pointerId) return;
+
+      event.preventDefault();
+      const travelWidth = Math.max(1, dragState.trackWidth - dragState.thumbWidth);
+      const scrollDelta =
+        ((event.clientX - dragState.startX) / travelWidth) * dragState.maxScrollLeft;
+      element.scrollLeft = clampScrollLeft(
+        dragState.startScrollLeft + scrollDelta,
+        dragState.maxScrollLeft,
+      );
+      updateTabsScrollState();
+    },
+    [updateTabsScrollState],
+  );
+
+  const finishTabsScrollbarDrag = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const dragState = tabsScrollbarDragRef.current;
+    if (!dragState || dragState.pointerId !== event.pointerId) return;
+    tabsScrollbarDragRef.current = null;
+    setTabsScrollbarDragging(false);
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  }, []);
+
   const showFirstOpenChooser = projectReady && sessions.length === 0 && !fileTreeInitialized;
 
   const startFileTree = useCallback(() => {
@@ -771,104 +994,130 @@ export function ProjectToolsPanel(props: ProjectToolsPanelProps) {
             />
             <div className="project-tools-panel-handle" aria-hidden="true" />
             <div className="project-tools-panel-header flex h-11 shrink-0 items-center gap-2 border-b border-border px-3">
-              <div className="project-tools-panel-tabs flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
-                {sessions.map((session) => {
-                  const isPendingClose = pendingCloseSessionId === session.id;
-                  const isClosing = closingSessionId === session.id;
-                  const sessionTitle = formatTerminalSessionTitle(
-                    session.title,
-                    t("projectTools.terminalTitle"),
-                  );
-                  return (
+              <div className="project-tools-panel-tabs-shell min-w-0 flex-1 overflow-hidden">
+                <div
+                  ref={tabsScrollRef}
+                  className="project-tools-panel-tabs flex min-w-0 items-center gap-1 overflow-x-auto overflow-y-hidden"
+                  onScroll={updateTabsScrollState}
+                  onWheel={handleTabsWheel}
+                >
+                  {sessions.map((session) => {
+                    const isPendingClose = pendingCloseSessionId === session.id;
+                    const isClosing = closingSessionId === session.id;
+                    const sessionTitle = formatTerminalSessionTitle(
+                      session.title,
+                      t("projectTools.terminalTitle"),
+                    );
+                    return (
+                      <div
+                        key={session.id}
+                        data-project-tools-tab-id={session.id}
+                        className={cn(
+                          "project-tools-panel-tab group flex h-8 max-w-[12rem] shrink-0 items-center gap-1.5 rounded-md px-2 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground",
+                          currentActiveTab === "terminal" &&
+                            activeSession?.id === session.id &&
+                            "bg-muted text-foreground",
+                          isPendingClose &&
+                            "bg-destructive/10 text-destructive hover:bg-destructive/15",
+                        )}
+                        title={sessionTitle}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setActiveSessionId(session.id);
+                            onActiveTabChange("terminal");
+                          }}
+                          className="flex min-w-0 flex-1 items-center gap-1.5 bg-transparent p-0 text-left text-inherit"
+                        >
+                          <Terminal className="h-3.5 w-3.5 shrink-0" />
+                          <span className="min-w-0 truncate">{sessionTitle}</span>
+                          {!session.running ? (
+                            <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-muted-foreground/50" />
+                          ) : (
+                            <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500" />
+                          )}
+                        </button>
+                        <button
+                          type="button"
+                          aria-label={`${isPendingClose ? t("projectTools.confirmClose") : t("projectTools.close")} ${sessionTitle}`}
+                          title={
+                            isPendingClose
+                              ? t("projectTools.confirmCloseTerminal")
+                              : t("projectTools.closeTerminal")
+                          }
+                          disabled={isClosing}
+                          className={cn(
+                            "ml-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground/70 transition-colors hover:bg-background hover:text-foreground focus-visible:bg-background focus-visible:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50",
+                            isPendingClose
+                              ? "bg-destructive/10 text-destructive hover:bg-destructive hover:text-destructive-foreground md:opacity-100"
+                              : "md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100",
+                          )}
+                          onMouseDown={(event) => {
+                            event.stopPropagation();
+                          }}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            handleCloseRequest(session);
+                          }}
+                        >
+                          {isPendingClose ? <Check className="h-3 w-3" /> : <X className="h-3 w-3" />}
+                        </button>
+                      </div>
+                    );
+                  })}
+                  {fileTreeInitialized ? (
                     <div
-                      key={session.id}
+                      data-project-tools-tab-id={FILE_TREE_TAB_ID}
                       className={cn(
                         "project-tools-panel-tab group flex h-8 max-w-[12rem] shrink-0 items-center gap-1.5 rounded-md px-2 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground",
-                        currentActiveTab === "terminal" &&
-                          activeSession?.id === session.id &&
-                          "bg-muted text-foreground",
-                        isPendingClose &&
-                          "bg-destructive/10 text-destructive hover:bg-destructive/15",
+                        currentActiveTab === "fileTree" && "bg-muted text-foreground",
                       )}
-                      title={sessionTitle}
+                      title={t("projectTools.fileTreeTitle")}
                     >
                       <button
                         type="button"
-                        onClick={() => {
-                          setActiveSessionId(session.id);
-                          onActiveTabChange("terminal");
-                        }}
+                        onClick={() => onActiveTabChange("fileTree")}
                         className="flex min-w-0 flex-1 items-center gap-1.5 bg-transparent p-0 text-left text-inherit"
                       >
-                        <Terminal className="h-3.5 w-3.5 shrink-0" />
-                        <span className="min-w-0 truncate">{sessionTitle}</span>
-                        {!session.running ? (
-                          <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-muted-foreground/50" />
-                        ) : (
-                          <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500" />
-                        )}
+                        <FolderTree className="h-3.5 w-3.5 shrink-0" />
+                        <span className="min-w-0 truncate">{t("projectTools.fileTreeTitle")}</span>
                       </button>
                       <button
                         type="button"
-                        aria-label={`${isPendingClose ? t("projectTools.confirmClose") : t("projectTools.close")} ${sessionTitle}`}
-                        title={
-                          isPendingClose
-                            ? t("projectTools.confirmCloseTerminal")
-                            : t("projectTools.closeTerminal")
-                        }
-                        disabled={isClosing}
-                        className={cn(
-                          "ml-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground/70 transition-colors hover:bg-background hover:text-foreground focus-visible:bg-background focus-visible:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50",
-                          isPendingClose
-                            ? "bg-destructive/10 text-destructive hover:bg-destructive hover:text-destructive-foreground md:opacity-100"
-                            : "md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100",
-                        )}
+                        aria-label={t("projectTools.closeFileTree")}
+                        title={t("projectTools.closeFileTree")}
+                        className="ml-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground/70 transition-colors hover:bg-background hover:text-foreground focus-visible:bg-background focus-visible:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100"
                         onMouseDown={(event) => {
                           event.stopPropagation();
                         }}
                         onClick={(event) => {
                           event.stopPropagation();
-                          handleCloseRequest(session);
+                          closeFileTree();
                         }}
                       >
-                        {isPendingClose ? <Check className="h-3 w-3" /> : <X className="h-3 w-3" />}
+                        <X className="h-3 w-3" />
                       </button>
                     </div>
-                  );
-                })}
-                {fileTreeInitialized ? (
+                  ) : null}
+                </div>
+                <div
+                  aria-hidden="true"
+                  className={cn(
+                    "project-tools-panel-tabs-scrollbar",
+                    tabsHaveOverflow && "project-tools-panel-tabs-scrollbar-visible",
+                    tabsScrollbarDragging && "project-tools-panel-tabs-scrollbar-dragging",
+                  )}
+                  onPointerCancel={finishTabsScrollbarDrag}
+                  onPointerDown={handleTabsScrollbarPointerDown}
+                  onPointerMove={handleTabsScrollbarPointerMove}
+                  onPointerUp={finishTabsScrollbarDrag}
+                >
                   <div
-                    className={cn(
-                      "project-tools-panel-tab group flex h-8 max-w-[12rem] shrink-0 items-center gap-1.5 rounded-md px-2 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground",
-                      currentActiveTab === "fileTree" && "bg-muted text-foreground",
-                    )}
-                    title={t("projectTools.fileTreeTitle")}
-                  >
-                    <button
-                      type="button"
-                      onClick={() => onActiveTabChange("fileTree")}
-                      className="flex min-w-0 flex-1 items-center gap-1.5 bg-transparent p-0 text-left text-inherit"
-                    >
-                      <FolderTree className="h-3.5 w-3.5 shrink-0" />
-                      <span className="min-w-0 truncate">{t("projectTools.fileTreeTitle")}</span>
-                    </button>
-                    <button
-                      type="button"
-                      aria-label={t("projectTools.closeFileTree")}
-                      title={t("projectTools.closeFileTree")}
-                      className="ml-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground/70 transition-colors hover:bg-background hover:text-foreground focus-visible:bg-background focus-visible:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100"
-                      onMouseDown={(event) => {
-                        event.stopPropagation();
-                      }}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        closeFileTree();
-                      }}
-                    >
-                      <X className="h-3 w-3" />
-                    </button>
-                  </div>
-                ) : null}
+                    className="project-tools-panel-tabs-scrollbar-thumb"
+                    style={tabsScrollbarThumbStyle}
+                  />
+                </div>
               </div>
               {shellOptions.length > 1 ? (
                 <select
