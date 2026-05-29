@@ -745,7 +745,13 @@ export class GatewayWebSocketClient {
     args: Record<string, unknown> = {},
   ): Promise<T> {
     const requestType = `git.${action}`;
-    if (action === "status" || action === "branches" || action === "diff") {
+    if (
+      action === "status" ||
+      action === "branches" ||
+      action === "diff" ||
+      action === "log" ||
+      action === "commit_diff"
+    ) {
       return this.requestWithRecovery<T>(requestType, { workdir, args });
     }
     return this.request<T>(requestType, { workdir, args });

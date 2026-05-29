@@ -3,6 +3,7 @@ import {
   type GitClient,
   normalizeGitBranchesResponse,
   normalizeGitDiffResponse,
+  normalizeGitLogResponse,
   normalizeGitOperationResponse,
   normalizeGitRepositoryState,
 } from "./types";
@@ -29,6 +30,14 @@ export function createGatewayGitClient(api: GatewayWebSocketClientLike): GitClie
     },
     async diff(workdir, mode, path) {
       return normalizeGitDiffResponse(await api.gitRequest("diff", workdir, { mode, path }));
+    },
+    async log(workdir, limit) {
+      return normalizeGitLogResponse(await api.gitRequest("log", workdir, { limit }), workdir);
+    },
+    async commitDiff(workdir, commit, path) {
+      return normalizeGitDiffResponse(
+        await api.gitRequest("commit_diff", workdir, { commit, path }),
+      );
     },
     async stage(workdir, path) {
       return normalizeGitOperationResponse(await api.gitRequest("stage", workdir, { path }), workdir);

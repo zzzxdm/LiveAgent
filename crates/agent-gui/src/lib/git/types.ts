@@ -55,6 +55,31 @@ export type GitDiffResponse = {
   binaryFiles: string[];
 };
 
+export type GitCommitFile = {
+  path: string;
+  oldPath?: string | null;
+  status: string;
+  kind: string;
+};
+
+export type GitCommitSummary = {
+  sha: string;
+  shortSha: string;
+  parents: string[];
+  refs: string[];
+  subject: string;
+  authorName: string;
+  authorEmail: string;
+  authorDate: string;
+  files: GitCommitFile[];
+  fileCount: number;
+};
+
+export type GitLogResponse = {
+  state: GitRepositoryState;
+  commits: GitCommitSummary[];
+};
+
 export type GitOperationResponse = {
   ok: boolean;
   state: GitRepositoryState;
@@ -69,6 +94,8 @@ export type GitClient = {
   switchBranch(workdir: string, branch: string, kind?: string): Promise<GitOperationResponse>;
   createBranch(workdir: string, branch: string): Promise<GitOperationResponse>;
   diff(workdir: string, mode: "branch" | "working_tree", path?: string): Promise<GitDiffResponse>;
+  log(workdir: string, limit?: number): Promise<GitLogResponse>;
+  commitDiff(workdir: string, commit: string, path?: string): Promise<GitDiffResponse>;
   stage(workdir: string, path: string): Promise<GitOperationResponse>;
   stageAll(workdir: string): Promise<GitOperationResponse>;
   unstage(workdir: string, path: string): Promise<GitOperationResponse>;
@@ -182,6 +209,41 @@ export function normalizeGitDiffResponse(input: unknown): GitDiffResponse {
     stat: asString(source.stat),
     truncated: asBoolean(source.truncated),
     binaryFiles: stringArray(source.binaryFiles ?? source.binary_files),
+  };
+}
+
+export function normalizeGitCommitFile(input: unknown): GitCommitFile {
+  const source = asObject(input);
+  return {
+    path: asString(source.path),
+    oldPath: asString(source.oldPath ?? source.old_path) || null,
+    status: asString(source.status),
+    kind: asString(source.kind),
+  };
+}
+
+export function normalizeGitCommitSummary(input: unknown): GitCommitSummary {
+  const source = asObject(input);
+  const files = Array.isArray(source.files) ? source.files.map(normalizeGitCommitFile) : [];
+  return {
+    sha: asString(source.sha),
+    shortSha: asString(source.shortSha ?? source.short_sha),
+    parents: stringArray(source.parents),
+    refs: stringArray(source.refs),
+    subject: asString(source.subject),
+    authorName: asString(source.authorName ?? source.author_name),
+    authorEmail: asString(source.authorEmail ?? source.author_email),
+    authorDate: asString(source.authorDate ?? source.author_date),
+    files,
+    fileCount: asNumber(source.fileCount ?? source.file_count) || files.length,
+  };
+}
+
+export function normalizeGitLogResponse(input: unknown, workdir = ""): GitLogResponse {
+  const source = asObject(input);
+  return {
+    state: normalizeGitRepositoryState(source.state, workdir),
+    commits: Array.isArray(source.commits) ? source.commits.map(normalizeGitCommitSummary) : [],
   };
 }
 

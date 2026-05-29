@@ -12,6 +12,8 @@ use wait_timeout::ChildExt;
 const GIT_DIFF_MAX_BYTES: usize = 512 * 1024;
 const GIT_UNTRACKED_FILE_MAX_BYTES: u64 = 128 * 1024;
 const GIT_COMMAND_TIMEOUT_SECS: u64 = 60;
+const GIT_LOG_DEFAULT_LIMIT: usize = 80;
+const GIT_LOG_MAX_LIMIT: usize = 200;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -84,6 +86,37 @@ pub struct GitDiffResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct GitCommitFile {
+    pub path: String,
+    pub old_path: Option<String>,
+    pub status: String,
+    pub kind: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitCommitSummary {
+    pub sha: String,
+    pub short_sha: String,
+    pub parents: Vec<String>,
+    pub refs: Vec<String>,
+    pub subject: String,
+    pub author_name: String,
+    pub author_email: String,
+    pub author_date: String,
+    pub files: Vec<GitCommitFile>,
+    pub file_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitLogResponse {
+    pub state: GitRepositoryState,
+    pub commits: Vec<GitCommitSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GitOperationResponse {
     pub ok: bool,
     pub state: GitRepositoryState,
@@ -101,6 +134,8 @@ struct GitGatewayArgs {
     old_path: Option<String>,
     message: Option<String>,
     mode: Option<String>,
+    commit: Option<String>,
+    limit: Option<usize>,
 }
 
 struct GitOutput {
@@ -668,6 +703,264 @@ fn truncate_patch(value: String) -> (String, bool) {
     (value[..end].to_string(), true)
 }
 
+fn commit_file_kind(status: &str) -> String {
+    match status.chars().next().unwrap_or('M') {
+        'A' => "added",
+        'D' => "deleted",
+        'R' => "renamed",
+        'C' => "copied",
+        'T' => "type_changed",
+        _ => "modified",
+    }
+    .to_string()
+}
+
+fn parse_name_status_line(line: &str) -> Option<GitCommitFile> {
+    let trimmed = line.trim_end();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let mut parts = trimmed.split('\t');
+    let raw_status = parts.next()?.trim();
+    if raw_status.is_empty() {
+        return None;
+    }
+    let status = raw_status
+        .chars()
+        .next()
+        .unwrap_or('M')
+        .to_ascii_uppercase()
+        .to_string();
+    if status == "R" || status == "C" {
+        let old_path = parts.next()?.trim().to_string();
+        let path = parts.next()?.trim().to_string();
+        if path.is_empty() {
+            return None;
+        }
+        return Some(GitCommitFile {
+            path,
+            old_path: if old_path.is_empty() {
+                None
+            } else {
+                Some(old_path)
+            },
+            status,
+            kind: commit_file_kind(raw_status),
+        });
+    }
+    let path = parts.next()?.trim().to_string();
+    if path.is_empty() {
+        return None;
+    }
+    Some(GitCommitFile {
+        path,
+        old_path: None,
+        status,
+        kind: commit_file_kind(raw_status),
+    })
+}
+
+fn clean_git_ref_label(raw: &str) -> Option<String> {
+    let mut value = raw.trim();
+    if value.is_empty() {
+        return None;
+    }
+    if let Some((_, target)) = value.split_once(" -> ") {
+        value = target.trim();
+    }
+    if let Some(stripped) = value.strip_prefix("tag: ") {
+        value = stripped.trim();
+    }
+    for prefix in ["refs/heads/", "refs/remotes/", "refs/tags/"] {
+        if let Some(stripped) = value.strip_prefix(prefix) {
+            value = stripped;
+            break;
+        }
+    }
+    if value.is_empty() || value == "HEAD" || value.ends_with("/HEAD") {
+        return None;
+    }
+    Some(value.to_string())
+}
+
+fn parse_git_refs(raw: &str) -> Vec<String> {
+    let mut refs = Vec::new();
+    for part in raw.split(',') {
+        let Some(label) = clean_git_ref_label(part) else {
+            continue;
+        };
+        if !refs.contains(&label) {
+            refs.push(label);
+        }
+    }
+    refs
+}
+
+fn parse_git_log(raw: &str) -> Vec<GitCommitSummary> {
+    raw.split('\x1e')
+        .filter_map(|record| {
+            let record = record.trim_start_matches('\n');
+            if record.trim().is_empty() {
+                return None;
+            }
+            let mut lines = record.lines();
+            let header = lines.next()?;
+            let fields: Vec<&str> = header.split('\x1f').collect();
+            if fields.len() < 8 {
+                return None;
+            }
+            let sha = fields[0].trim().to_string();
+            if sha.is_empty() {
+                return None;
+            }
+            let files: Vec<GitCommitFile> = lines.filter_map(parse_name_status_line).collect();
+            Some(GitCommitSummary {
+                sha,
+                short_sha: fields[1].trim().to_string(),
+                parents: fields[2]
+                    .split_whitespace()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+                    .collect(),
+                refs: parse_git_refs(fields[3]),
+                author_name: fields[4].trim().to_string(),
+                author_email: fields[5].trim().to_string(),
+                author_date: fields[6].trim().to_string(),
+                subject: fields[7].trim().to_string(),
+                file_count: files.len(),
+                files,
+            })
+        })
+        .collect()
+}
+
+fn validate_commit_sha(repo_root: &str, value: &str) -> Result<String, String> {
+    let sha = value.trim();
+    if sha.len() < 7 || sha.len() > 64 || !sha.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        return Err("Git commit 必须是有效的提交 SHA。".to_string());
+    }
+    let rev = format!("{sha}^{{commit}}");
+    Ok(git_success(repo_root, &["rev-parse", "--verify", &rev])?
+        .stdout
+        .lines()
+        .next()
+        .unwrap_or(sha)
+        .trim()
+        .to_string())
+}
+
+pub(crate) fn git_log_sync(
+    workdir: String,
+    limit: Option<usize>,
+) -> Result<GitLogResponse, String> {
+    let state = git_status_sync(workdir)?;
+    if state.status != "ready" {
+        return Ok(GitLogResponse {
+            state,
+            commits: Vec::new(),
+        });
+    }
+    if !ref_exists(&state.repo_root, "HEAD") {
+        return Ok(GitLogResponse {
+            state,
+            commits: Vec::new(),
+        });
+    }
+    let limit = limit
+        .unwrap_or(GIT_LOG_DEFAULT_LIMIT)
+        .clamp(1, GIT_LOG_MAX_LIMIT)
+        .to_string();
+    let mut args = vec![
+        "log".to_string(),
+        "--date=iso-strict".to_string(),
+        "--decorate=full".to_string(),
+        "--topo-order".to_string(),
+        "--parents".to_string(),
+        "--name-status".to_string(),
+        "--find-renames".to_string(),
+        "--max-count".to_string(),
+        limit,
+        "--pretty=format:%x1e%H%x1f%h%x1f%P%x1f%D%x1f%an%x1f%ae%x1f%aI%x1f%s".to_string(),
+        "HEAD".to_string(),
+    ];
+    let cloud_ref = if !state.upstream.trim().is_empty() {
+        state.upstream.clone()
+    } else {
+        resolve_review_base(&state)
+    };
+    if !cloud_ref.trim().is_empty() && cloud_ref != "HEAD" {
+        args.push(cloud_ref);
+    }
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let output = git_success(&state.repo_root, &arg_refs)?;
+    Ok(GitLogResponse {
+        state,
+        commits: parse_git_log(&output.stdout),
+    })
+}
+
+pub(crate) fn git_commit_diff_sync(
+    workdir: String,
+    commit: String,
+    path: Option<String>,
+) -> Result<GitDiffResponse, String> {
+    let state = ensure_ready_state(&workdir)?;
+    let commit = validate_commit_sha(&state.repo_root, &commit)?;
+    let clean_path = path
+        .as_deref()
+        .map(validate_repo_relative_path)
+        .transpose()?;
+    let parent_output = git_success(&state.repo_root, &["show", "-s", "--format=%P", &commit])?;
+    let first_parent = parent_output
+        .stdout
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .to_string();
+    let mut args: Vec<String> = if first_parent.is_empty() {
+        vec![
+            "show".to_string(),
+            "--format=".to_string(),
+            "--patch".to_string(),
+            "--stat".to_string(),
+            "--find-renames".to_string(),
+            commit.clone(),
+        ]
+    } else {
+        vec![
+            "diff".to_string(),
+            "--patch".to_string(),
+            "--stat".to_string(),
+            "--find-renames".to_string(),
+            first_parent.clone(),
+            commit.clone(),
+        ]
+    };
+    if let Some(path) = clean_path.as_deref() {
+        args.push("--".to_string());
+        args.push(path.to_string());
+    }
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let output = git_success(&state.repo_root, &arg_refs)?;
+    let (stat, patch) = split_stat_and_patch(&output.stdout);
+    let (patch, truncated) = truncate_patch(patch);
+    Ok(GitDiffResponse {
+        base_ref: if first_parent.is_empty() {
+            "ROOT".to_string()
+        } else {
+            first_parent
+        },
+        head_ref: commit,
+        mode: "commit".to_string(),
+        files: clean_path.into_iter().collect(),
+        patch,
+        stat,
+        truncated,
+        binary_files: Vec::new(),
+    })
+}
+
 pub(crate) fn git_diff_sync(
     workdir: String,
     mode: Option<String>,
@@ -968,6 +1261,12 @@ pub(crate) fn git_gateway_action_sync(
             workdir,
             args.branch.unwrap_or_default(),
         )?),
+        "log" => serde_json::to_value(git_log_sync(workdir, args.limit)?),
+        "commit_diff" => serde_json::to_value(git_commit_diff_sync(
+            workdir,
+            args.commit.unwrap_or_default(),
+            args.path,
+        )?),
         "diff" => serde_json::to_value(git_diff_sync(workdir, args.mode, args.path)?),
         "stage" => serde_json::to_value(git_stage_sync(workdir, args.path.unwrap_or_default())?),
         "stage_all" => serde_json::to_value(git_stage_all_sync(workdir)?),
@@ -1042,6 +1341,24 @@ pub async fn git_diff(
     tauri::async_runtime::spawn_blocking(move || git_diff_sync(workdir, mode, path))
         .await
         .map_err(|error| format!("git_diff join 失败：{error}"))?
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn git_log(workdir: String, limit: Option<usize>) -> Result<GitLogResponse, String> {
+    tauri::async_runtime::spawn_blocking(move || git_log_sync(workdir, limit))
+        .await
+        .map_err(|error| format!("git_log join 失败：{error}"))?
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn git_commit_diff(
+    workdir: String,
+    commit: String,
+    path: Option<String>,
+) -> Result<GitDiffResponse, String> {
+    tauri::async_runtime::spawn_blocking(move || git_commit_diff_sync(workdir, commit, path))
+        .await
+        .map_err(|error| format!("git_commit_diff join 失败：{error}"))?
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -1181,6 +1498,21 @@ mod tests {
         assert!(parse_gateway_args(json!({"path":"src/main.rs"}).to_string()).is_ok());
     }
 
+    #[test]
+    fn parses_git_log_commits_refs_and_renames() {
+        let raw = "\x1e0123456789abcdef\x1f0123456\x1ffedcba9\x1fHEAD -> refs/heads/feature, refs/remotes/origin/feature\x1fAlice\x1falice@example.com\x1f2026-05-29T10:11:12+08:00\x1frename file\nR100\told.txt\tnew.txt\n";
+        let commits = parse_git_log(raw);
+        assert_eq!(commits.len(), 1);
+        let commit = &commits[0];
+        assert_eq!(commit.short_sha, "0123456");
+        assert_eq!(commit.refs, vec!["feature", "origin/feature"]);
+        assert_eq!(commit.parents, vec!["fedcba9"]);
+        assert_eq!(commit.files.len(), 1);
+        assert_eq!(commit.files[0].status, "R");
+        assert_eq!(commit.files[0].old_path.as_deref(), Some("old.txt"));
+        assert_eq!(commit.files[0].path, "new.txt");
+    }
+
     fn run_temp_git(repo_root: &Path, args: &[&str]) {
         let output = Command::new("git")
             .args(args)
@@ -1248,6 +1580,32 @@ mod tests {
         let committed =
             git_commit_sync(workdir.clone(), "add feature file".to_string()).expect("commit");
         assert!(committed.ok, "commit failed: {}", committed.message);
+
+        let history = git_log_sync(workdir.clone(), Some(10)).expect("git log");
+        let feature_commit = history
+            .commits
+            .iter()
+            .find(|commit| commit.subject == "add feature file")
+            .expect("feature commit should be in log");
+        assert!(
+            feature_commit
+                .files
+                .iter()
+                .any(|file| file.path == "feature.txt" && file.status == "A"),
+            "feature commit files: {:?}",
+            feature_commit.files
+        );
+        let commit_diff = git_commit_diff_sync(
+            workdir.clone(),
+            feature_commit.sha.clone(),
+            Some("feature.txt".to_string()),
+        )
+        .expect("commit diff");
+        assert!(
+            commit_diff.patch.contains("feature.txt") && commit_diff.patch.contains("+feature"),
+            "commit diff patch:\n{}",
+            commit_diff.patch
+        );
 
         let branch_diff =
             git_diff_sync(workdir.clone(), Some("branch".to_string()), None).expect("branch diff");

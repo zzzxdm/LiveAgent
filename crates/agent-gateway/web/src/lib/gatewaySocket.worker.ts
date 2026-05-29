@@ -486,6 +486,8 @@ async function resolveRequest(client: GatewayWebSocketClient, method: string, pa
     case "git.switch_branch":
     case "git.create_branch":
     case "git.diff":
+    case "git.log":
+    case "git.commit_diff":
     case "git.stage":
     case "git.stage_all":
     case "git.unstage":

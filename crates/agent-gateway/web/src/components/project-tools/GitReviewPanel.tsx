@@ -1,8 +1,21 @@
 import { DiffFile } from "@git-diff-view/file";
 import { DiffModeEnum, DiffView } from "@git-diff-view/react";
 import "@git-diff-view/react/styles/diff-view.css";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { memo, type MouseEvent as ReactMouseEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocale } from "../../i18n";
+import { computeGitGraph, GRAPH_COLORS, type GraphRow } from "../../lib/git/gitGraph";
+import type {
+  GitClient,
+  GitCommitFile,
+  GitCommitSummary,
+  GitDiffResponse,
+  GitRepositoryState,
+  GitStatusEntry,
+} from "../../lib/git/types";
+import { emptyGitRepositoryState } from "../../lib/git/types";
+import { cn } from "../../lib/shared/utils";
+import { getFileTypeIcon } from "../chat/fileTypeIcons";
 import {
   BrushCleaning,
   Eye,
@@ -10,6 +23,7 @@ import {
   FolderTree,
   GitBranch,
   GitCommitHorizontal,
+  History,
   Loader2,
   MoreHorizontal,
   RefreshCw,
@@ -18,15 +32,6 @@ import {
 } from "../icons";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
-import { cn } from "../../lib/shared/utils";
-import type {
-  GitClient,
-  GitDiffResponse,
-  GitRepositoryState,
-  GitStatusEntry,
-} from "../../lib/git/types";
-import { emptyGitRepositoryState } from "../../lib/git/types";
-import { getFileTypeIcon } from "../chat/fileTypeIcons";
 
 const LARGE_DIFF_CHUNK_CHAR_LIMIT = 120 * 1024;
 const LARGE_DIFF_CHUNK_LINE_LIMIT = 1800;
@@ -65,6 +70,19 @@ type ParsedDiffStat = {
 };
 
 type DiffViewKind = "branch" | "workingTree";
+type GitReviewMode = "changes" | "history";
+type GitHistoryRow =
+  | {
+      type: "commit";
+      commit: GitCommitSummary;
+      commitIndex: number;
+    }
+  | {
+      type: "file";
+      commit: GitCommitSummary;
+      commitIndex: number;
+      file: GitCommitFile;
+    };
 
 type ChangeContextMenuState = {
   x: number;
@@ -81,6 +99,7 @@ const CHANGE_CONTEXT_MENU_WIDTH = 232;
 const CHANGE_CONTEXT_MENU_HEIGHT = 210;
 const CHANGES_MENU_WIDTH = 232;
 const CHANGES_MENU_HEIGHT = 170;
+const GIT_HISTORY_LIMIT = 120;
 const CHANGE_CONTEXT_MENU_ITEM_CLASS =
   "flex w-full items-center gap-2 px-3 py-2 text-left text-xs hover:bg-accent hover:text-accent-foreground disabled:pointer-events-none disabled:opacity-45";
 
@@ -538,6 +557,193 @@ function statusLabel(entry: GitStatusEntry) {
   return statuses[0] ?? "";
 }
 
+function commitFileStatusTone(file: GitCommitFile) {
+  const status = file.status.charAt(0).toUpperCase();
+  if (status === "A") return "text-emerald-600 dark:text-emerald-300";
+  if (status === "D") return "text-rose-600 dark:text-rose-300";
+  if (status === "R" || status === "C") return "text-sky-600 dark:text-sky-300";
+  return "text-amber-600 dark:text-amber-300";
+}
+
+function commitFileStatusLabel(file: GitCommitFile) {
+  const status = file.status.charAt(0).toUpperCase();
+  return status === "R" || status === "C" || status === "A" || status === "D" ? status : "M";
+}
+
+const GRAPH_COL_WIDTH = 16;
+const GRAPH_ROW_HEIGHT = 28;
+const GRAPH_DOT_Y = 14;
+const GRAPH_DOT_R = 3.5;
+const GRAPH_LINE_W = 2;
+
+function graphLayoutWidth(row: GraphRow) {
+  return graphDrawWidth(row);
+}
+
+function graphDrawWidth(row: GraphRow) {
+  const maxPipeCol = Math.max(
+    row.commitCol,
+    ...row.topPipes.flatMap((pipe) => [pipe.fromCol, pipe.toCol]),
+    ...row.bottomPipes.flatMap((pipe) => [pipe.fromCol, pipe.toCol]),
+  );
+  return (maxPipeCol + 1) * GRAPH_COL_WIDTH;
+}
+
+function graphContinuationWidth(row: GraphRow) {
+  const maxPipeCol = Math.max(
+    row.commitCol,
+    ...row.bottomPipes.flatMap((pipe) => [pipe.fromCol, pipe.toCol]),
+  );
+  return (maxPipeCol + 1) * GRAPH_COL_WIDTH;
+}
+
+function graphLaneX(col: number) {
+  return col * GRAPH_COL_WIDTH + GRAPH_COL_WIDTH / 2;
+}
+
+function graphCurvePath(x1: number, y1: number, x2: number, y2: number) {
+  const handle = Math.min(10, Math.abs(y2 - y1) * 0.72);
+  return `M${x1} ${y1}C${x1} ${y1 + handle},${x2} ${y2 - handle},${x2} ${y2}`;
+}
+
+function GitGraphSvgCell({
+  row,
+  isFirst,
+  isLast,
+}: {
+  row: GraphRow;
+  isFirst: boolean;
+  isLast: boolean;
+}) {
+  const drawW = graphDrawWidth(row);
+  const layoutW = graphLayoutWidth(row);
+  const cx = graphLaneX(row.commitCol);
+
+  return (
+    <div className="h-7 shrink-0 overflow-visible" style={{ width: layoutW, minWidth: layoutW }}>
+      <svg
+        width={drawW}
+        height={GRAPH_ROW_HEIGHT}
+        className="block overflow-visible"
+        aria-hidden="true"
+        style={{ shapeRendering: "geometricPrecision" }}
+      >
+        {row.topPipes.map((pipe, index) => {
+          const x1 = graphLaneX(pipe.fromCol);
+          const x2 = graphLaneX(pipe.toCol);
+          const color = GRAPH_COLORS[pipe.color % GRAPH_COLORS.length];
+          if (isFirst) return null;
+          if (x1 === x2) {
+            return (
+              <line
+                key={`t${index}`}
+                x1={x1}
+                y1={0}
+                x2={x2}
+                y2={GRAPH_DOT_Y}
+                stroke={color}
+                strokeLinecap="round"
+                strokeWidth={GRAPH_LINE_W}
+              />
+            );
+          }
+          return (
+            <path
+              key={`t${index}`}
+              d={graphCurvePath(x1, 0, x2, GRAPH_DOT_Y)}
+              fill="none"
+              stroke={color}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={GRAPH_LINE_W}
+            />
+          );
+        })}
+
+        {row.bottomPipes.map((pipe, index) => {
+          const x1 = graphLaneX(pipe.fromCol);
+          const x2 = graphLaneX(pipe.toCol);
+          const color = GRAPH_COLORS[pipe.color % GRAPH_COLORS.length];
+          if (isLast) return null;
+          if (x1 === x2) {
+            return (
+              <line
+                key={`b${index}`}
+                x1={x1}
+                y1={GRAPH_DOT_Y}
+                x2={x2}
+                y2={GRAPH_ROW_HEIGHT}
+                stroke={color}
+                strokeLinecap="round"
+                strokeWidth={GRAPH_LINE_W}
+              />
+            );
+          }
+          return (
+            <path
+              key={`b${index}`}
+              d={graphCurvePath(x1, GRAPH_DOT_Y, x2, GRAPH_ROW_HEIGHT)}
+              fill="none"
+              stroke={color}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={GRAPH_LINE_W}
+            />
+          );
+        })}
+
+        <circle
+          cx={cx}
+          cy={GRAPH_DOT_Y}
+          r={GRAPH_DOT_R}
+          fill={GRAPH_COLORS[row.commitColor % GRAPH_COLORS.length]}
+          stroke="var(--background)"
+          strokeWidth={2}
+        />
+      </svg>
+    </div>
+  );
+}
+
+function GitGraphContinuationCell({ row, isLast }: { row: GraphRow; isLast: boolean }) {
+  const layoutW = graphContinuationWidth(row);
+  const pipes = isLast ? [] : row.bottomPipes;
+
+  return (
+    <div
+      className="relative shrink-0 self-stretch overflow-visible"
+      style={{ width: layoutW, minWidth: layoutW }}
+      aria-hidden="true"
+    >
+      {pipes.map((pipe, index) => {
+        const x = graphLaneX(pipe.toCol);
+        return (
+          <span
+            key={`c${index}:${pipe.toCol}:${pipe.color}`}
+            className="absolute bottom-0 top-0"
+            style={{
+              backgroundColor: GRAPH_COLORS[pipe.color % GRAPH_COLORS.length],
+              left: x - GRAPH_LINE_W / 2,
+              width: GRAPH_LINE_W,
+            }}
+          />
+        );
+      })}
+    </div>
+  );
+}
+
+function formatCommitDate(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 function canStageEntry(entry: GitStatusEntry) {
   return entry.untracked || entry.conflicted || entry.worktreeStatus !== ".";
 }
@@ -583,16 +789,47 @@ export function GitReviewPanel(props: {
   const [commitMessage, setCommitMessage] = useState("");
   const [selectedPath, setSelectedPath] = useState("");
   const [activeDiffView, setActiveDiffView] = useState<DiffViewKind>("workingTree");
+  const [reviewMode, setReviewMode] = useState<GitReviewMode>("changes");
+  const [historyCommits, setHistoryCommits] = useState<GitCommitSummary[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState("");
+  const [selectedCommitSha, setSelectedCommitSha] = useState("");
+  const [selectedCommitFilePath, setSelectedCommitFilePath] = useState("");
+  const [expandedCommitSha, setExpandedCommitSha] = useState("");
+  const [commitDiff, setCommitDiff] = useState<GitDiffResponse | null>(null);
+  const [commitDiffLoading, setCommitDiffLoading] = useState(false);
   const [changeContextMenu, setChangeContextMenu] = useState<ChangeContextMenuState | null>(null);
   const [changesMenu, setChangesMenu] = useState<ChangesMenuState | null>(null);
   const selectedPathRef = useRef("");
+  const selectedCommitShaRef = useRef("");
+  const selectedCommitFilePathRef = useRef("");
+  const expandedCommitShaRef = useRef("");
+  const reviewModeRef = useRef<GitReviewMode>("changes");
   const diffRequestIdRef = useRef(0);
+  const commitDiffRequestIdRef = useRef(0);
   const panelRef = useRef<HTMLDivElement | null>(null);
+  const historyListRef = useRef<HTMLDivElement | null>(null);
   const suppressNextGitChangedRef = useRef(false);
 
   useEffect(() => {
     selectedPathRef.current = selectedPath;
   }, [selectedPath]);
+
+  useEffect(() => {
+    reviewModeRef.current = reviewMode;
+  }, [reviewMode]);
+
+  useEffect(() => {
+    selectedCommitShaRef.current = selectedCommitSha;
+  }, [selectedCommitSha]);
+
+  useEffect(() => {
+    selectedCommitFilePathRef.current = selectedCommitFilePath;
+  }, [selectedCommitFilePath]);
+
+  useEffect(() => {
+    expandedCommitShaRef.current = expandedCommitSha;
+  }, [expandedCommitSha]);
 
   const clearDiffs = useCallback(() => {
     diffRequestIdRef.current += 1;
@@ -681,9 +918,113 @@ export function GitReviewPanel(props: {
     }
   }, [clearDiffs, cwd, gitClient, loadDiffForPath]);
 
+  const loadCommitDiff = useCallback(
+    async (commitSha: string, path: string) => {
+      const cleanCommit = commitSha.trim();
+      const cleanPath = path.trim();
+      const requestId = commitDiffRequestIdRef.current + 1;
+      commitDiffRequestIdRef.current = requestId;
+      setHistoryError("");
+      setCommitDiff(null);
+      if (!gitClient || !cwd.trim() || !cleanCommit || !cleanPath) {
+        setCommitDiffLoading(false);
+        return;
+      }
+      setCommitDiffLoading(true);
+      try {
+        const diff = await gitClient.commitDiff(cwd, cleanCommit, cleanPath);
+        if (commitDiffRequestIdRef.current === requestId) {
+          setCommitDiff(diff);
+        }
+      } catch (err) {
+        if (commitDiffRequestIdRef.current === requestId) {
+          setHistoryError(err instanceof Error ? err.message : String(err));
+        }
+      } finally {
+        if (commitDiffRequestIdRef.current === requestId) {
+          setCommitDiffLoading(false);
+        }
+      }
+    },
+    [cwd, gitClient],
+  );
+
+  const loadHistory = useCallback(async () => {
+    if (!gitClient || !cwd.trim()) {
+      setHistoryCommits([]);
+      selectedCommitShaRef.current = "";
+      selectedCommitFilePathRef.current = "";
+      expandedCommitShaRef.current = "";
+      setSelectedCommitSha("");
+      setSelectedCommitFilePath("");
+      setExpandedCommitSha("");
+      setCommitDiff(null);
+      setHistoryError("");
+      return;
+    }
+    setHistoryLoading(true);
+    setHistoryError("");
+    try {
+      const response = await gitClient.log(cwd, GIT_HISTORY_LIMIT);
+      setState(response.state);
+      setHistoryCommits(response.commits);
+      if (response.state.status !== "ready" || response.commits.length === 0) {
+        selectedCommitShaRef.current = "";
+        selectedCommitFilePathRef.current = "";
+        expandedCommitShaRef.current = "";
+        setSelectedCommitSha("");
+        setSelectedCommitFilePath("");
+        setExpandedCommitSha("");
+        setCommitDiff(null);
+        return;
+      }
+      const currentCommit = response.commits.find(
+        (commit) => commit.sha === selectedCommitShaRef.current,
+      );
+      const nextCommit = currentCommit ?? response.commits[0];
+      const currentFile =
+        currentCommit?.files.find((file) => file.path === selectedCommitFilePathRef.current) ??
+        null;
+      const nextExpandedCommitSha = response.commits.some(
+        (commit) => commit.sha === expandedCommitShaRef.current,
+      )
+        ? expandedCommitShaRef.current
+        : "";
+      selectedCommitShaRef.current = nextCommit.sha;
+      selectedCommitFilePathRef.current = currentFile?.path ?? "";
+      expandedCommitShaRef.current = nextExpandedCommitSha;
+      setSelectedCommitSha(nextCommit.sha);
+      setSelectedCommitFilePath(currentFile?.path ?? "");
+      setExpandedCommitSha(nextExpandedCommitSha);
+      if (currentCommit && currentFile) {
+        void loadCommitDiff(currentCommit.sha, currentFile.path);
+      } else {
+        setCommitDiff(null);
+      }
+    } catch (err) {
+      setHistoryCommits([]);
+      selectedCommitShaRef.current = "";
+      selectedCommitFilePathRef.current = "";
+      expandedCommitShaRef.current = "";
+      setSelectedCommitSha("");
+      setSelectedCommitFilePath("");
+      setExpandedCommitSha("");
+      setCommitDiff(null);
+      setHistoryError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, [cwd, gitClient, loadCommitDiff]);
+
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    if (reviewMode === "history") {
+      void loadHistory();
+    }
+  }, [loadHistory, reviewMode]);
 
   useEffect(() => {
     const handleGitChanged = () => {
@@ -691,11 +1032,15 @@ export function GitReviewPanel(props: {
         suppressNextGitChangedRef.current = false;
         return;
       }
-      void refresh();
+      if (reviewModeRef.current === "history") {
+        void loadHistory();
+      } else {
+        void refresh();
+      }
     };
     window.addEventListener("liveagent:git-changed", handleGitChanged);
     return () => window.removeEventListener("liveagent:git-changed", handleGitChanged);
-  }, [refresh]);
+  }, [loadHistory, refresh]);
 
   const runOperation = useCallback(
     async (name: string, task: () => Promise<unknown>) => {
@@ -706,6 +1051,9 @@ export function GitReviewPanel(props: {
         const result = await task();
         assertGitOperationResult(result, t("projectTools.gitReview.operationFailed"));
         await refresh();
+        if (reviewModeRef.current === "history") {
+          await loadHistory();
+        }
         suppressNextGitChangedRef.current = true;
         window.dispatchEvent(new Event("liveagent:git-changed"));
         return true;
@@ -716,7 +1064,7 @@ export function GitReviewPanel(props: {
         setBusy("");
       }
     },
-    [canWrite, cwd, gitClient, refresh, t],
+    [canWrite, cwd, gitClient, loadHistory, refresh, t],
   );
 
   const entries = state.entries;
@@ -742,6 +1090,37 @@ export function GitReviewPanel(props: {
     [changeContextMenu?.path, entries],
   );
   const contextEntryCanStage = contextEntry ? canStageEntry(contextEntry) : false;
+  const selectedCommit = useMemo(
+    () => historyCommits.find((commit) => commit.sha === selectedCommitSha) ?? null,
+    [historyCommits, selectedCommitSha],
+  );
+  const selectedCommitFile = useMemo(
+    () => selectedCommit?.files.find((file) => file.path === selectedCommitFilePath) ?? null,
+    [selectedCommit, selectedCommitFilePath],
+  );
+  const gitGraph = useMemo(() => computeGitGraph(historyCommits), [historyCommits]);
+  const historyRows = useMemo<GitHistoryRow[]>(() => {
+    const rows: GitHistoryRow[] = [];
+    historyCommits.forEach((commit, commitIndex) => {
+      rows.push({ type: "commit", commit, commitIndex });
+      if (commit.sha === expandedCommitSha) {
+        commit.files.forEach((file) => rows.push({ type: "file", commit, commitIndex, file }));
+      }
+    });
+    return rows;
+  }, [expandedCommitSha, historyCommits]);
+  const historyVirtualizer = useVirtualizer({
+    count: historyRows.length,
+    getScrollElement: () => historyListRef.current,
+    estimateSize: (index) => (historyRows[index]?.type === "file" ? 26 : 28),
+    overscan: 8,
+    getItemKey: (index) => {
+      const row = historyRows[index];
+      if (!row) return index;
+      if (row.type === "commit") return `commit:${row.commit.sha}`;
+      return `file:${row.commit.sha}:${row.file.status}:${row.file.oldPath ?? ""}:${row.file.path}`;
+    },
+  });
 
   useEffect(() => {
     if (!changeContextMenu) return;
@@ -786,6 +1165,36 @@ export function GitReviewPanel(props: {
       void loadDiffForPath(entry.path);
     },
     [loadDiffForPath],
+  );
+
+  const selectCommit = useCallback(
+    (commit: GitCommitSummary) => {
+      selectedCommitShaRef.current = commit.sha;
+      selectedCommitFilePathRef.current = "";
+      setSelectedCommitSha(commit.sha);
+      setSelectedCommitFilePath("");
+      setCommitDiff(null);
+      setHistoryError("");
+      setExpandedCommitSha((current) => {
+        const next = current === commit.sha ? "" : commit.sha;
+        expandedCommitShaRef.current = next;
+        return next;
+      });
+    },
+    [],
+  );
+
+  const selectCommitFile = useCallback(
+    (commit: GitCommitSummary, file: GitCommitFile) => {
+      selectedCommitShaRef.current = commit.sha;
+      selectedCommitFilePathRef.current = file.path;
+      expandedCommitShaRef.current = commit.sha;
+      setSelectedCommitSha(commit.sha);
+      setSelectedCommitFilePath(file.path);
+      setExpandedCommitSha(commit.sha);
+      void loadCommitDiff(commit.sha, file.path);
+    },
+    [loadCommitDiff],
   );
 
   const openChangeContextMenu = useCallback(
@@ -886,6 +1295,8 @@ export function GitReviewPanel(props: {
     [onRevealInFileTree],
   );
 
+  const visibleError = reviewMode === "history" ? (historyCommits.length === 0 ? historyError : "") : error;
+
   return (
     <div ref={panelRef} className="relative flex h-full min-h-0 flex-col bg-background">
       <div className="shrink-0 border-b border-border px-3 py-3">
@@ -902,12 +1313,18 @@ export function GitReviewPanel(props: {
           <Button
             size="sm"
             variant="ghost"
-            disabled={loading}
+            disabled={loading || historyLoading}
             title={t("projectTools.gitReview.refresh")}
             aria-label={t("projectTools.gitReview.refresh")}
-            onClick={() => void refresh()}
+            onClick={() => {
+              if (reviewMode === "history") {
+                void loadHistory();
+              } else {
+                void refresh();
+              }
+            }}
           >
-            <RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} />
+            <RefreshCw className={cn("h-3.5 w-3.5", (loading || historyLoading) && "animate-spin")} />
           </Button>
           <Button
             size="sm"
@@ -959,15 +1376,48 @@ export function GitReviewPanel(props: {
             </span>
           </div>
         ) : null}
+        <div className="mt-3 inline-flex rounded-md border border-border bg-muted/25 p-0.5 text-xs">
+          <button
+            type="button"
+            className={cn(
+              "inline-flex items-center gap-1.5 rounded px-2.5 py-1.5 font-medium text-muted-foreground transition-colors hover:text-foreground",
+              reviewMode === "changes" && "bg-background text-foreground shadow-sm",
+            )}
+            onClick={() => {
+              setReviewMode("changes");
+              setChangeContextMenu(null);
+              setChangesMenu(null);
+            }}
+          >
+            <GitBranch className="h-3.5 w-3.5" />
+            {t("projectTools.gitReview.localChangesView")}
+          </button>
+          <button
+            type="button"
+            className={cn(
+              "inline-flex items-center gap-1.5 rounded px-2.5 py-1.5 font-medium text-muted-foreground transition-colors hover:text-foreground",
+              reviewMode === "history" && "bg-background text-foreground shadow-sm",
+            )}
+            onClick={() => {
+              setReviewMode("history");
+              setChangeContextMenu(null);
+              setChangesMenu(null);
+            }}
+          >
+            <History className="h-3.5 w-3.5" />
+            {t("projectTools.gitReview.commitHistoryView")}
+          </button>
+        </div>
         {!canWrite && disabledMessage ? (
           <div className="mt-2 rounded-md bg-muted px-2 py-1.5 text-xs text-muted-foreground">
             {disabledMessage}
           </div>
         ) : null}
-        {error ? <div className="mt-2 text-xs text-destructive">{error}</div> : null}
+        {visibleError ? <div className="mt-2 text-xs text-destructive">{visibleError}</div> : null}
       </div>
 
-      <div className="grid min-h-0 flex-1 grid-cols-1 grid-rows-[minmax(8rem,14rem)_minmax(0,1fr)] md:grid-cols-[18rem_minmax(0,1fr)] md:grid-rows-1">
+      {reviewMode === "changes" ? (
+        <div className="grid min-h-0 flex-1 grid-cols-1 grid-rows-[minmax(8rem,14rem)_minmax(0,1fr)] md:grid-cols-[18rem_minmax(0,1fr)] md:grid-rows-1">
         <aside className="flex min-h-0 flex-col overflow-hidden border-b border-border md:border-b-0 md:border-r">
           <div className="relative z-10 flex shrink-0 items-center justify-between gap-2 border-b border-border bg-background px-3 py-1.5">
             <div className="min-w-0 truncate text-xs font-semibold">
@@ -1104,8 +1554,191 @@ export function GitReviewPanel(props: {
             </div>
           )}
         </main>
-      </div>
-      {changesMenu ? (
+        </div>
+      ) : (
+        <div className="grid min-h-0 flex-1 grid-cols-1 grid-rows-[minmax(10rem,18rem)_minmax(0,1fr)] md:grid-cols-[18rem_minmax(0,1fr)] md:grid-rows-1">
+          <aside className="flex min-h-0 flex-col overflow-hidden border-b border-border md:border-b-0 md:border-r">
+            <div className="relative z-10 flex shrink-0 items-center justify-between gap-2 border-b border-border bg-background px-3 py-1.5">
+              <div className="flex min-w-0 items-center gap-2 truncate text-xs font-semibold">
+                <History className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                <span className="truncate">{t("projectTools.gitReview.commitHistoryTitle")}</span>
+              </div>
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                className="h-6 w-6 shrink-0 px-0"
+                disabled={historyLoading}
+                title={t("projectTools.gitReview.refresh")}
+                aria-label={t("projectTools.gitReview.refresh")}
+                onClick={() => void loadHistory()}
+              >
+                <RefreshCw className={cn("h-3.5 w-3.5", historyLoading && "animate-spin")} />
+              </Button>
+            </div>
+            <div ref={historyListRef} className="min-h-0 flex-1 overflow-auto">
+              {historyLoading && historyCommits.length === 0 ? (
+                <div className="flex items-center justify-center gap-2 px-3 py-6 text-xs text-muted-foreground">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  <span>{t("projectTools.gitReview.commitHistoryTitle")}</span>
+                </div>
+              ) : historyCommits.length === 0 ? (
+                <div className="px-3 py-6 text-xs text-muted-foreground">
+                  {historyError || t("projectTools.gitReview.noCommitHistory")}
+                </div>
+              ) : (
+                <div className="relative" style={{ height: `${historyVirtualizer.getTotalSize()}px` }}>
+                  {historyVirtualizer.getVirtualItems().map((virtualRow) => {
+                    const row = historyRows[virtualRow.index];
+                    if (!row) return null;
+                    if (row.type === "file") {
+                      const TypeIcon = getFileTypeIcon(row.file.path, "file");
+                      const fileSelected =
+                        row.commit.sha === selectedCommitSha && row.file.path === selectedCommitFilePath;
+                      const fileName = basename(row.file.path);
+                      const filePath = row.file.oldPath
+                        ? `${parentPath(row.file.oldPath)} -> ${parentPath(row.file.path)}`
+                        : parentPath(row.file.path);
+                      const graphRow = gitGraph.rows[row.commitIndex];
+                      return (
+                        <div
+                          key={virtualRow.key}
+                          ref={historyVirtualizer.measureElement}
+                          data-index={virtualRow.index}
+                          className="absolute left-0 top-0 w-full"
+                          style={{ transform: `translateY(${virtualRow.start}px)` }}
+                        >
+                          <div className="flex min-w-0">
+                            {graphRow ? (
+                              <GitGraphContinuationCell
+                                row={graphRow}
+                                isLast={row.commitIndex === historyCommits.length - 1}
+                              />
+                            ) : null}
+                            <button
+                              type="button"
+                              className={cn(
+                                "mr-1 flex h-6 min-w-0 flex-1 select-none items-center gap-1.5 rounded px-1.5 text-left text-xs transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                                fileSelected && "bg-accent text-accent-foreground",
+                              )}
+                              title={row.file.oldPath ? `${row.file.oldPath} -> ${row.file.path}` : row.file.path}
+                              onClick={() => selectCommitFile(row.commit, row.file)}
+                            >
+                              <TypeIcon className="h-4 w-4 shrink-0" aria-hidden="true" />
+                              <span className="min-w-0 flex-1 truncate">
+                                <span className="font-medium">{fileName}</span>
+                                <span className="ml-1 text-[10px] text-muted-foreground">
+                                  {filePath}
+                                </span>
+                              </span>
+                              <span className={cn("shrink-0 text-[10px] font-semibold", commitFileStatusTone(row.file))}>
+                                {commitFileStatusLabel(row.file)}
+                              </span>
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    }
+                    const commit = row.commit;
+                    const commitSelected = commit.sha === selectedCommitSha;
+                    const commitExpanded = commit.sha === expandedCommitSha;
+                    const graphRow = gitGraph.rows[row.commitIndex];
+                    return (
+                      <div
+                        key={virtualRow.key}
+                        ref={historyVirtualizer.measureElement}
+                        data-index={virtualRow.index}
+                        className="absolute left-0 top-0 w-full"
+                        style={{ transform: `translateY(${virtualRow.start}px)` }}
+                      >
+                        <div className="flex min-w-0">
+                          {graphRow ? (
+                            <GitGraphSvgCell
+                              row={graphRow}
+                              isFirst={row.commitIndex === 0}
+                              isLast={row.commitIndex === historyCommits.length - 1}
+                            />
+                          ) : null}
+                          <button
+                            type="button"
+                            className={cn(
+                              "flex h-7 min-w-0 flex-1 items-center rounded px-1.5 pr-1 text-left text-xs transition-colors hover:bg-muted/45 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                              commitSelected && "bg-accent/80 text-accent-foreground",
+                            )}
+                            title={commit.subject || commit.shortSha}
+                            aria-expanded={commitExpanded}
+                            onClick={() => selectCommit(commit)}
+                          >
+                            <span className="min-w-0 flex-1 truncate text-[12px] font-medium">
+                              {commit.subject || commit.shortSha}
+                            </span>
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </aside>
+          <main className="flex h-full min-h-0 flex-col overflow-hidden p-3">
+            {selectedCommit ? (
+              <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden">
+                <div className="flex shrink-0 items-start gap-2 rounded-md border border-border/70 bg-muted/20 px-3 py-2 text-xs">
+                  <GitCommitHorizontal className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate font-medium text-foreground" title={selectedCommit.subject}>
+                      {selectedCommit.subject || selectedCommit.shortSha}
+                    </div>
+                    <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
+                      <span className="font-mono">{selectedCommit.shortSha}</span>
+                      <span>{selectedCommit.authorName}</span>
+                      <span>{formatCommitDate(selectedCommit.authorDate)}</span>
+                    </div>
+                  </div>
+                </div>
+                {selectedCommitFile ? (
+                  <section className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-border/70 bg-background">
+                    <div className="sticky top-0 z-10 flex shrink-0 items-center justify-between gap-2 border-b border-border/70 bg-background px-3 py-2">
+                      <div className="min-w-0">
+                        <div className="truncate text-xs font-semibold">
+                          {t("projectTools.gitReview.commitDiff")}
+                        </div>
+                        <div className="truncate text-[11px] text-muted-foreground" title={selectedCommitFile.path}>
+                          {basename(selectedCommitFile.path)} - {selectedCommit.shortSha}
+                        </div>
+                      </div>
+                      {commitDiffLoading ? (
+                        <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground" />
+                      ) : null}
+                    </div>
+                    {commitDiffLoading && !commitDiff && !historyError ? (
+                      <div className="flex min-h-0 flex-1 items-center justify-center text-muted-foreground">
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      </div>
+                    ) : (
+                      <DiffContent
+                        title={t("projectTools.gitReview.commitDiff")}
+                        diff={commitDiff}
+                        error={historyError}
+                      />
+                    )}
+                  </section>
+                ) : (
+                  <div className="flex min-h-0 flex-1 items-center justify-center rounded-lg border border-border/70 bg-muted/10 px-4 text-center text-xs text-muted-foreground">
+                    {t("projectTools.gitReview.selectCommitFileToViewDiff")}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="flex min-h-0 flex-1 items-center justify-center rounded-lg border border-border/70 bg-muted/10 px-4 text-center text-xs text-muted-foreground">
+                {historyError || t("projectTools.gitReview.selectCommitToViewFiles")}
+              </div>
+            )}
+          </main>
+        </div>
+      )}
+      {reviewMode === "changes" && changesMenu ? (
         <div
           role="menu"
           className="absolute z-[75] min-w-56 select-none overflow-hidden rounded-lg border border-border bg-popover py-1 text-xs text-popover-foreground shadow-xl"
@@ -1161,7 +1794,7 @@ export function GitReviewPanel(props: {
           </button>
         </div>
       ) : null}
-      {changeContextMenu && contextEntry ? (
+      {reviewMode === "changes" && changeContextMenu && contextEntry ? (
         <div
           role="menu"
           className="absolute z-[80] min-w-56 select-none overflow-hidden rounded-lg border border-border bg-popover py-1 text-xs text-popover-foreground shadow-xl"

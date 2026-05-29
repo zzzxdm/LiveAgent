@@ -3,6 +3,7 @@ import {
   type GitClient,
   normalizeGitBranchesResponse,
   normalizeGitDiffResponse,
+  normalizeGitLogResponse,
   normalizeGitOperationResponse,
   normalizeGitRepositoryState,
 } from "./types";
@@ -28,6 +29,12 @@ export const tauriGitClient: GitClient = {
   },
   async diff(workdir, mode, path) {
     return normalizeGitDiffResponse(await invoke("git_diff", { workdir, mode, path }));
+  },
+  async log(workdir, limit) {
+    return normalizeGitLogResponse(await invoke("git_log", { workdir, limit }), workdir);
+  },
+  async commitDiff(workdir, commit, path) {
+    return normalizeGitDiffResponse(await invoke("git_commit_diff", { workdir, commit, path }));
   },
   async stage(workdir, path) {
     return normalizeGitOperationResponse(await invoke("git_stage", { workdir, path }), workdir);

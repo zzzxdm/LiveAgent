@@ -150,6 +150,8 @@ macro_rules! app_invoke_handler {
             commands::git::git_switch_branch,
             commands::git::git_create_branch,
             commands::git::git_diff,
+            commands::git::git_log,
+            commands::git::git_commit_diff,
             commands::git::git_stage,
             commands::git::git_stage_all,
             commands::git::git_unstage,
