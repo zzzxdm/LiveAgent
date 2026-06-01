@@ -554,7 +554,10 @@ const DIFF_SELECTION_CONTEXT_MENU_MARGIN = 12;
 const GIT_HISTORY_PAGE_SIZE = 50;
 const GIT_HISTORY_LOAD_MORE_SCROLL_THRESHOLD_PX = 96;
 const CHANGE_CONTEXT_MENU_ITEM_CLASS =
-  "flex w-full items-center gap-2 px-3 py-2 text-left text-xs hover:bg-accent hover:text-accent-foreground disabled:pointer-events-none disabled:opacity-45";
+  "flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs transition-colors hover:bg-accent hover:text-accent-foreground disabled:pointer-events-none disabled:opacity-45";
+const CONTEXT_MENU_CONTAINER_CLASS =
+  "editor-context-menu select-none overflow-hidden rounded-xl border border-border/60 bg-popover/80 p-1 text-xs text-popover-foreground shadow-2xl ring-1 ring-black/[0.03] backdrop-blur-xl dark:ring-white/[0.06]";
+const CONTEXT_MENU_SEPARATOR_CLASS = "mx-1 my-1 h-px bg-border/60";
 const GIT_REVIEW_POLL_INTERVAL_MS = 1500;
 
 type GitRefreshOptions = {
@@ -1536,7 +1539,7 @@ function DiffContent(props: {
             <div
               ref={contextMenuRef}
               role="menu"
-              className="fixed z-[120] w-max min-w-[9.5rem] max-w-[calc(100vw-1.5rem)] select-none overflow-hidden rounded-lg border border-border/70 bg-popover p-1.5 text-popover-foreground shadow-[0_20px_60px_-20px_rgba(15,23,42,0.35)]"
+              className="editor-context-menu fixed z-[120] w-max min-w-[9.5rem] max-w-[calc(100vw-1.5rem)] select-none overflow-hidden rounded-xl border border-border/60 bg-popover/80 p-1 text-popover-foreground shadow-2xl ring-1 ring-black/[0.03] backdrop-blur-xl dark:ring-white/[0.06]"
               style={{
                 left: selectionContextMenuPosition.left,
                 top: selectionContextMenuPosition.top,
@@ -1549,7 +1552,7 @@ function DiffContent(props: {
               <button
                 type="button"
                 role="menuitem"
-                className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[13px] text-foreground/90 transition-colors hover:bg-accent hover:text-accent-foreground"
+                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[13px] text-foreground/90 transition-colors hover:bg-accent hover:text-accent-foreground"
                 onClick={() => {
                   writeTextToClipboard(selectionContextMenu.selectedText);
                   closeSelectionContextMenu();
@@ -4589,7 +4592,7 @@ export function GitReviewPanel(props: {
       (historyContextMenu.kind === "commit" || historyContextFile) ? (
         <div
           role="menu"
-          className="absolute z-[75] min-w-56 select-none overflow-hidden rounded-lg border border-border bg-popover py-1 text-xs text-popover-foreground shadow-xl"
+          className={cn("absolute z-[75] min-w-56", CONTEXT_MENU_CONTAINER_CLASS)}
           style={{ left: historyContextMenu.x, top: historyContextMenu.y }}
           onClick={(event) => event.stopPropagation()}
           onContextMenu={(event) => {
@@ -4640,7 +4643,7 @@ export function GitReviewPanel(props: {
                 <ExternalLink className="h-3.5 w-3.5" />
                 <span>{t("projectTools.gitReview.openOnGithub")}</span>
               </button>
-              <div className="my-1 h-px bg-border/70" />
+              <div className={CONTEXT_MENU_SEPARATOR_CLASS} />
               <button
                 type="button"
                 role="menuitem"
@@ -4651,7 +4654,7 @@ export function GitReviewPanel(props: {
                 <GitBranch className="h-3.5 w-3.5" />
                 <span>{t("projectTools.gitReview.createBranch")}</span>
               </button>
-              <div className="my-1 h-px bg-border/70" />
+              <div className={CONTEXT_MENU_SEPARATOR_CLASS} />
               <button
                 type="button"
                 role="menuitem"
@@ -4662,7 +4665,7 @@ export function GitReviewPanel(props: {
                 <RefreshCw className="h-3.5 w-3.5" />
                 <span>{t("projectTools.gitReview.compareWithRemote")}</span>
               </button>
-              <div className="my-1 h-px bg-border/70" />
+              <div className={CONTEXT_MENU_SEPARATOR_CLASS} />
               <button
                 type="button"
                 role="menuitem"
@@ -4681,7 +4684,7 @@ export function GitReviewPanel(props: {
                 <Copy className="h-3.5 w-3.5" />
                 <span>{t("projectTools.gitReview.copyCommitMessage")}</span>
               </button>
-              <div className="my-1 h-px bg-border/70" />
+              <div className={CONTEXT_MENU_SEPARATOR_CLASS} />
               <button
                 type="button"
                 role="menuitem"
@@ -4699,7 +4702,7 @@ export function GitReviewPanel(props: {
       {reviewMode === "changes" && changesMenu ? (
         <div
           role="menu"
-          className="absolute z-[75] min-w-56 select-none overflow-hidden rounded-lg border border-border bg-popover py-1 text-xs text-popover-foreground shadow-xl"
+          className={cn("absolute z-[75] min-w-56", CONTEXT_MENU_CONTAINER_CLASS)}
           style={{ left: changesMenu.x, top: changesMenu.y }}
           onClick={(event) => event.stopPropagation()}
           onContextMenu={(event) => {
@@ -4758,7 +4761,7 @@ export function GitReviewPanel(props: {
       {reviewMode === "changes" && changeContextMenu && contextEntry ? (
         <div
           role="menu"
-          className="absolute z-[80] min-w-56 select-none overflow-hidden rounded-lg border border-border bg-popover py-1 text-xs text-popover-foreground shadow-xl"
+          className={cn("absolute z-[80] min-w-56", CONTEXT_MENU_CONTAINER_CLASS)}
           style={{ left: changeContextMenu.x, top: changeContextMenu.y }}
           onClick={(event) => event.stopPropagation()}
           onContextMenu={(event) => {

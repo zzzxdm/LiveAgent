@@ -29,7 +29,16 @@ import type {
   TerminalShellOption,
   TerminalSnapshot,
 } from "@/lib/terminal/types";
-import { Check, ChevronRight, FolderTree, GitBranch, GripVertical, Plus, Terminal, X } from "../icons";
+import {
+  Check,
+  ChevronRight,
+  FolderTree,
+  GitBranch,
+  GripVertical,
+  Plus,
+  Terminal,
+  X,
+} from "../icons";
 import { Button } from "../ui/button";
 import {
   DropdownMenu,
@@ -83,6 +92,7 @@ type ProjectToolsPanelProps = {
   onGitReviewOpenChange: (open: boolean) => void;
   onSessionsChange?: (sessions: TerminalSession[]) => void;
   onInsertFileMention?: (path: string, kind: "file" | "dir") => void;
+  onOpenEditableFile?: (path: string) => void;
   onInsertCommitMention?: (commit: GitCommitContextPayload) => void;
   onInsertGitFileMention?: (file: GitFileContextPayload) => void;
   onClose?: () => void;
@@ -159,7 +169,10 @@ function dirname(path: string) {
 }
 
 function expandedPathsForFileTreePath(path: string) {
-  const normalized = path.trim().replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+  const normalized = path
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/^\/+|\/+$/g, "");
   const parts = normalized.split("/").filter(Boolean);
   const dirs = parts.slice(0, -1);
   return ["", ...dirs.map((_, index) => parts.slice(0, index + 1).join("/"))];
@@ -409,9 +422,14 @@ function XTermViewport({
     const replayBufferedEvents = () => {
       const events = bufferedEvents.splice(0);
       for (const event of events) {
-        writeTerminalEvent(term, event, (nextOffset) => {
-          lastOutputOffset = nextOffset;
-        }, lastOutputOffset);
+        writeTerminalEvent(
+          term,
+          event,
+          (nextOffset) => {
+            lastOutputOffset = nextOffset;
+          },
+          lastOutputOffset,
+        );
       }
     };
 
@@ -445,9 +463,14 @@ function XTermViewport({
       if (disposed || event.sessionId !== session.id) return;
       if (event.kind === "output" && event.data) {
         if (snapshotLoaded && !loadingSnapshot) {
-          writeTerminalEvent(term, event, (nextOffset) => {
-            lastOutputOffset = nextOffset;
-          }, lastOutputOffset);
+          writeTerminalEvent(
+            term,
+            event,
+            (nextOffset) => {
+              lastOutputOffset = nextOffset;
+            },
+            lastOutputOffset,
+          );
         } else {
           bufferedEvents.push(event);
         }
@@ -591,6 +614,7 @@ export function ProjectToolsPanel(props: ProjectToolsPanelProps) {
     onGitReviewOpenChange,
     onSessionsChange,
     onInsertFileMention,
+    onOpenEditableFile,
     onInsertCommitMention,
     onInsertGitFileMention,
     onClose,
@@ -687,10 +711,7 @@ export function ProjectToolsPanel(props: ProjectToolsPanelProps) {
     scrollWidth: 0,
   });
   const [tabsScrollbarDragging, setTabsScrollbarDragging] = useState(false);
-  const tabsMaxScrollLeft = Math.max(
-    0,
-    tabsScrollState.scrollWidth - tabsScrollState.clientWidth,
-  );
+  const tabsMaxScrollLeft = Math.max(0, tabsScrollState.scrollWidth - tabsScrollState.clientWidth);
   const tabsHaveOverflow = tabsMaxScrollLeft > 1;
   const tabsThumbWidth =
     tabsHaveOverflow && tabsScrollState.scrollWidth > 0
@@ -1285,8 +1306,7 @@ export function ProjectToolsPanel(props: ProjectToolsPanelProps) {
       const maxScrollLeft = element.scrollWidth - element.clientWidth;
       if (maxScrollLeft <= 1) return;
 
-      const delta =
-        Math.abs(event.deltaX) >= Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
+      const delta = Math.abs(event.deltaX) >= Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
       if (delta === 0) return;
 
       const nextScrollLeft = clampScrollLeft(element.scrollLeft + delta, maxScrollLeft);
@@ -1313,10 +1333,7 @@ export function ProjectToolsPanel(props: ProjectToolsPanelProps) {
         maxScrollLeft > 0 && element.scrollWidth > 0
           ? Math.max(
               28,
-              Math.min(
-                rect.width,
-                (element.clientWidth / element.scrollWidth) * rect.width,
-              ),
+              Math.min(rect.width, (element.clientWidth / element.scrollWidth) * rect.width),
             )
           : rect.width;
       const travelWidth = Math.max(1, rect.width - thumbWidth);
@@ -1385,14 +1402,14 @@ export function ProjectToolsPanel(props: ProjectToolsPanelProps) {
 
   const revealPathInFileTree = useCallback(
     (path: string) => {
-      const normalizedPath = path.trim().replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+      const normalizedPath = path
+        .trim()
+        .replace(/\\/g, "/")
+        .replace(/^\/+|\/+$/g, "");
       if (!projectReady) return;
       const selectedPath = normalizedPath.endsWith("/") ? dirname(normalizedPath) : normalizedPath;
       const expandedPaths = Array.from(
-        new Set([
-          ...fileTreeState.expandedPaths,
-          ...expandedPathsForFileTreePath(selectedPath),
-        ]),
+        new Set([...fileTreeState.expandedPaths, ...expandedPathsForFileTreePath(selectedPath)]),
       );
       setFileTreeInitialized(true);
       onFileTreeStateChange({
@@ -1697,7 +1714,11 @@ export function ProjectToolsPanel(props: ProjectToolsPanelProps) {
                             handleCloseRequest(session);
                           }}
                         >
-                          {isPendingClose ? <Check className="h-3 w-3" /> : <X className="h-3 w-3" />}
+                          {isPendingClose ? (
+                            <Check className="h-3 w-3" />
+                          ) : (
+                            <X className="h-3 w-3" />
+                          )}
                         </button>
                       </div>
                     );
@@ -1825,8 +1846,12 @@ export function ProjectToolsPanel(props: ProjectToolsPanelProps) {
                       <Terminal className="h-4.5 w-4.5" />
                     </div>
                     <div className="min-w-0 flex-1">
-                      <div className="font-medium leading-tight">{t("projectTools.newTerminal")}</div>
-                      <div className="mt-0.5 text-xs leading-tight text-muted-foreground">{t("projectTools.terminalDescription")}</div>
+                      <div className="font-medium leading-tight">
+                        {t("projectTools.newTerminal")}
+                      </div>
+                      <div className="mt-0.5 text-xs leading-tight text-muted-foreground">
+                        {t("projectTools.terminalDescription")}
+                      </div>
                     </div>
                   </button>
                   <button
@@ -1838,8 +1863,12 @@ export function ProjectToolsPanel(props: ProjectToolsPanelProps) {
                       <FolderTree className="h-4.5 w-4.5" />
                     </div>
                     <div className="min-w-0 flex-1">
-                      <div className="font-medium leading-tight">{t("projectTools.newFileTree")}</div>
-                      <div className="mt-0.5 text-xs leading-tight text-muted-foreground">{t("projectTools.fileTreeDescription")}</div>
+                      <div className="font-medium leading-tight">
+                        {t("projectTools.newFileTree")}
+                      </div>
+                      <div className="mt-0.5 text-xs leading-tight text-muted-foreground">
+                        {t("projectTools.fileTreeDescription")}
+                      </div>
                     </div>
                   </button>
                   <button
@@ -1851,8 +1880,12 @@ export function ProjectToolsPanel(props: ProjectToolsPanelProps) {
                       <GitBranch className="h-4.5 w-4.5" />
                     </div>
                     <div className="min-w-0 flex-1">
-                      <div className="font-medium leading-tight">{t("projectTools.newGitReview")}</div>
-                      <div className="mt-0.5 text-xs leading-tight text-muted-foreground">{t("projectTools.gitReviewDescription")}</div>
+                      <div className="font-medium leading-tight">
+                        {t("projectTools.newGitReview")}
+                      </div>
+                      <div className="mt-0.5 text-xs leading-tight text-muted-foreground">
+                        {t("projectTools.gitReviewDescription")}
+                      </div>
                     </div>
                   </button>
                 </div>
@@ -1861,9 +1894,7 @@ export function ProjectToolsPanel(props: ProjectToolsPanelProps) {
                     {t("projectTools.loading")}
                   </div>
                 ) : null}
-                {error ? (
-                  <div className="text-center text-xs text-destructive">{error}</div>
-                ) : null}
+                {error ? <div className="text-center text-xs text-destructive">{error}</div> : null}
               </div>
             ) : (
               <>
@@ -1883,6 +1914,7 @@ export function ProjectToolsPanel(props: ProjectToolsPanelProps) {
                       onInitializedChange={setFileTreeInitialized}
                       onSyncStateChange={onFileTreeStateChange}
                       onInsertFileMention={onInsertFileMention}
+                      onOpenEditableFile={onOpenEditableFile}
                     />
                   </div>
                 ) : null}
@@ -1929,16 +1961,24 @@ export function ProjectToolsPanel(props: ProjectToolsPanelProps) {
                         <Terminal className="h-6 w-6 text-muted-foreground" />
                       </div>
                       <div className="flex flex-col gap-1">
-                        <div className="text-sm font-medium text-foreground">{t("projectTools.newTerminal")}</div>
+                        <div className="text-sm font-medium text-foreground">
+                          {t("projectTools.newTerminal")}
+                        </div>
                         {terminalDisabledMessage ? (
                           <div className="max-w-xs text-xs text-muted-foreground">
                             {terminalDisabledMessage}
                           </div>
                         ) : (
-                          <div className="text-xs text-muted-foreground">{t("projectTools.terminalDescription")}</div>
+                          <div className="text-xs text-muted-foreground">
+                            {t("projectTools.terminalDescription")}
+                          </div>
                         )}
                       </div>
-                      <Button onClick={handleCreate} disabled={!terminalReady || creating} size="sm">
+                      <Button
+                        onClick={handleCreate}
+                        disabled={!terminalReady || creating}
+                        size="sm"
+                      >
                         {t("projectTools.newTerminal")}
                       </Button>
                       {loading ? (

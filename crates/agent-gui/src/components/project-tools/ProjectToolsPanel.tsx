@@ -91,6 +91,7 @@ type ProjectToolsPanelProps = {
   onGitReviewOpenChange: (open: boolean) => void;
   onSessionsChange?: (sessions: TerminalSession[]) => void;
   onInsertFileMention?: (path: string, kind: "file" | "dir") => void;
+  onOpenEditableFile?: (path: string) => void;
   onInsertCommitMention?: (commit: GitCommitContextPayload) => void;
   onInsertGitFileMention?: (file: GitFileContextPayload) => void;
   onClose?: () => void;
@@ -608,6 +609,7 @@ export function ProjectToolsPanel(props: ProjectToolsPanelProps) {
     onGitReviewOpenChange,
     onSessionsChange,
     onInsertFileMention,
+    onOpenEditableFile,
     onInsertCommitMention,
     onInsertGitFileMention,
     onClose,
@@ -1600,8 +1602,12 @@ export function ProjectToolsPanel(props: ProjectToolsPanelProps) {
                       <Terminal className="h-4.5 w-4.5" />
                     </div>
                     <div className="min-w-0 flex-1">
-                      <div className="font-medium leading-tight">{t("projectTools.newTerminal")}</div>
-                      <div className="mt-0.5 text-xs leading-tight text-muted-foreground">{t("projectTools.terminalDescription")}</div>
+                      <div className="font-medium leading-tight">
+                        {t("projectTools.newTerminal")}
+                      </div>
+                      <div className="mt-0.5 text-xs leading-tight text-muted-foreground">
+                        {t("projectTools.terminalDescription")}
+                      </div>
                     </div>
                   </button>
                   <button
@@ -1613,8 +1619,12 @@ export function ProjectToolsPanel(props: ProjectToolsPanelProps) {
                       <FolderTree className="h-4.5 w-4.5" />
                     </div>
                     <div className="min-w-0 flex-1">
-                      <div className="font-medium leading-tight">{t("projectTools.newFileTree")}</div>
-                      <div className="mt-0.5 text-xs leading-tight text-muted-foreground">{t("projectTools.fileTreeDescription")}</div>
+                      <div className="font-medium leading-tight">
+                        {t("projectTools.newFileTree")}
+                      </div>
+                      <div className="mt-0.5 text-xs leading-tight text-muted-foreground">
+                        {t("projectTools.fileTreeDescription")}
+                      </div>
                     </div>
                   </button>
                   <button
@@ -1626,8 +1636,12 @@ export function ProjectToolsPanel(props: ProjectToolsPanelProps) {
                       <GitBranch className="h-4.5 w-4.5" />
                     </div>
                     <div className="min-w-0 flex-1">
-                      <div className="font-medium leading-tight">{t("projectTools.newGitReview")}</div>
-                      <div className="mt-0.5 text-xs leading-tight text-muted-foreground">{t("projectTools.gitReviewDescription")}</div>
+                      <div className="font-medium leading-tight">
+                        {t("projectTools.newGitReview")}
+                      </div>
+                      <div className="mt-0.5 text-xs leading-tight text-muted-foreground">
+                        {t("projectTools.gitReviewDescription")}
+                      </div>
                     </div>
                   </button>
                 </div>
@@ -1636,9 +1650,7 @@ export function ProjectToolsPanel(props: ProjectToolsPanelProps) {
                     {t("projectTools.loading")}
                   </div>
                 ) : null}
-                {error ? (
-                  <div className="text-center text-xs text-destructive">{error}</div>
-                ) : null}
+                {error ? <div className="text-center text-xs text-destructive">{error}</div> : null}
               </div>
             ) : (
               <>
@@ -1658,6 +1670,7 @@ export function ProjectToolsPanel(props: ProjectToolsPanelProps) {
                       onInitializedChange={setFileTreeInitialized}
                       onSyncStateChange={onFileTreeStateChange}
                       onInsertFileMention={onInsertFileMention}
+                      onOpenEditableFile={onOpenEditableFile}
                     />
                   </div>
                 ) : null}
@@ -1704,16 +1717,24 @@ export function ProjectToolsPanel(props: ProjectToolsPanelProps) {
                         <Terminal className="h-6 w-6 text-muted-foreground" />
                       </div>
                       <div className="flex flex-col gap-1">
-                        <div className="text-sm font-medium text-foreground">{t("projectTools.newTerminal")}</div>
+                        <div className="text-sm font-medium text-foreground">
+                          {t("projectTools.newTerminal")}
+                        </div>
                         {terminalDisabledMessage ? (
                           <div className="max-w-xs text-xs text-muted-foreground">
                             {terminalDisabledMessage}
                           </div>
                         ) : (
-                          <div className="text-xs text-muted-foreground">{t("projectTools.terminalDescription")}</div>
+                          <div className="text-xs text-muted-foreground">
+                            {t("projectTools.terminalDescription")}
+                          </div>
                         )}
                       </div>
-                      <Button onClick={handleCreate} disabled={!terminalReady || creating} size="sm">
+                      <Button
+                        onClick={handleCreate}
+                        disabled={!terminalReady || creating}
+                        size="sm"
+                      >
                         {t("projectTools.newTerminal")}
                       </Button>
                       {loading ? (
