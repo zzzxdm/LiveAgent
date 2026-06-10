@@ -116,6 +116,8 @@ message AgentEnvelope {
     TunnelControlRequest tunnel_control = 67;
     TunnelControlResponse tunnel_control_resp = 68;
     TunnelFrame tunnel_frame = 69;
+    ChatControlEvent chat_control = 70;
+    RuntimeStatusEvent runtime_status = 71;
     ErrorResponse error = 99;
   }
 }
@@ -343,6 +345,26 @@ message ChatEvent {
     TOOL_STATUS = 6;
     HOSTED_SEARCH = 7;
   }
+}
+
+message ChatControlEvent {
+  string request_id = 1;
+  string client_request_id = 2;
+  string conversation_id = 3;
+  int64 run_epoch = 4;
+  string type = 5;
+  string state = 6;
+  string error_code = 7;
+  string message = 8;
+  int64 seq = 9;
+}
+
+message RuntimeStatusEvent {
+  string worker_id = 1;
+  string state = 2;
+  bool visible = 3;
+  uint32 active_run_count = 4;
+  int64 timestamp = 5;
 }
 
 message CronManageRequest {
