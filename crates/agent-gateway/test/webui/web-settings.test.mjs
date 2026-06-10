@@ -439,22 +439,13 @@ test("gateway settings sync keeps newer project tool tab open state", () => {
   assert.equal(newerSynced.customSettings.projectToolsPanel.activeTab, "gitReview");
   assert.deepEqual(newerSynced.customSettings.projectToolsPanel.activeTabs, {
     "/web/project": "gitReview",
-    "/desktop/project": "tunnel",
   });
   assert.deepEqual(newerSynced.customSettings.projectToolsPanel.tabOrders, {
     "/web/project": ["__git_review__", "__file_tree__"],
   });
 
   const payload = settingsSync.buildGatewaySettingsSyncPayload(newerSynced);
-  assert.deepEqual(payload.customSettings.projectToolsPanel, {
-    activeTabs: {
-      "/web/project": "gitReview",
-      "/desktop/project": "tunnel",
-    },
-  });
-  assert.equal(Object.hasOwn(payload.customSettings.projectToolsPanel, "activeTab"), false);
-  assert.equal(Object.hasOwn(payload.customSettings.projectToolsPanel, "width"), false);
-  assert.equal(Object.hasOwn(payload.customSettings.projectToolsPanel, "tabOrders"), false);
+  assert.equal(Object.hasOwn(payload.customSettings, "projectToolsPanel"), false);
   assert.deepEqual(payload.customSettings.projectToolsGitReview, {
     openProjectPathKeys: ["/desktop/project"],
     openVersion: 3,

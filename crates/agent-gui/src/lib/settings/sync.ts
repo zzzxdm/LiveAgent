@@ -3,7 +3,6 @@ import {
   normalizeChatRuntimeControls,
   normalizeProjectToolsFileTreeSettings,
   normalizeProjectToolsGitReviewSettings,
-  normalizeProjectToolsPanelActiveTabs,
   normalizeProjectToolsTunnelSettings,
   normalizeSettings,
   workspaceProjectPathKey,
@@ -13,16 +12,10 @@ export type GatewayProviderApiKeyUpdates = Record<string, string>;
 export type GatewaySettingsSyncProvider = Omit<AppSettings["customProviders"][number], "apiKey"> & {
   apiKeyConfigured?: boolean;
 };
-export type GatewayProjectToolsPanelSync = Pick<
-  AppSettings["customSettings"]["projectToolsPanel"],
-  "activeTabs"
->;
 export type GatewaySettingsSyncCustomSettings = Omit<
   Partial<AppSettings["customSettings"]>,
   "projectToolsPanel"
-> & {
-  projectToolsPanel?: GatewayProjectToolsPanelSync;
-};
+>;
 
 export type GatewaySettingsSyncPayload = {
   system: AppSettings["system"];
@@ -100,9 +93,6 @@ function syncableCustomSettings(
   const { projectToolsPanel: _projectToolsPanel, ...syncable } = customSettings;
   return {
     ...syncable,
-    projectToolsPanel: {
-      activeTabs: customSettings.projectToolsPanel.activeTabs,
-    },
     chatSidebar: {
       projectsCollapsed: false,
       recentCollapsed: false,
@@ -353,36 +343,6 @@ function mergeSyncedProjectToolsTunnelSettings(
   };
 }
 
-function projectToolsPanelActiveTabsEqual(
-  left: AppSettings["customSettings"]["projectToolsPanel"]["activeTabs"],
-  right: AppSettings["customSettings"]["projectToolsPanel"]["activeTabs"],
-) {
-  const leftEntries = Object.entries(left);
-  const rightEntries = Object.entries(right);
-  return (
-    leftEntries.length === rightEntries.length &&
-    leftEntries.every(([pathKey, activeTab]) => right[pathKey] === activeTab)
-  );
-}
-
-function mergeSyncedProjectToolsPanelSettings(
-  current: AppSettings["customSettings"]["projectToolsPanel"],
-  incoming: unknown,
-): AppSettings["customSettings"]["projectToolsPanel"] {
-  const source = asObject(incoming);
-  if (!Object.hasOwn(source, "activeTabs")) return current;
-  const activeTabs = {
-    ...current.activeTabs,
-    ...normalizeProjectToolsPanelActiveTabs(source.activeTabs),
-  };
-  return projectToolsPanelActiveTabsEqual(activeTabs, current.activeTabs)
-    ? current
-    : {
-        ...current,
-        activeTabs,
-      };
-}
-
 export function buildGatewaySettingsSyncPayload(
   settings: AppSettings,
   options: { includeProviderApiKeyUpdates?: boolean } = {},
@@ -471,12 +431,7 @@ export function applyGatewaySettingsSyncPayload(
           )
         : current.customSettings.projectToolsTunnel,
       chatSidebar: current.customSettings.chatSidebar,
-      projectToolsPanel: Object.hasOwn(incomingCustomSettings, "projectToolsPanel")
-        ? mergeSyncedProjectToolsPanelSettings(
-            current.customSettings.projectToolsPanel,
-            incomingCustomSettings.projectToolsPanel,
-          )
-        : current.customSettings.projectToolsPanel,
+      projectToolsPanel: current.customSettings.projectToolsPanel,
     },
     skills: (source.skills as AppSettings["skills"] | undefined) ?? current.skills,
     chatRuntimeControls: Object.hasOwn(source, "chatRuntimeControls")

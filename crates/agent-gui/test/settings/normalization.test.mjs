@@ -527,15 +527,7 @@ test("gateway settings sync payload redacts provider api keys", () => {
     openProjectPathKeys: ["/workspace/a", "/workspace/b"],
     openVersion: 3,
   });
-  assert.deepEqual(payload.customSettings.projectToolsPanel, {
-    activeTabs: {
-      "/workspace/a": "tunnel",
-      "/workspace/b": "gitReview",
-    },
-  });
-  assert.equal(Object.hasOwn(payload.customSettings.projectToolsPanel, "activeTab"), false);
-  assert.equal(Object.hasOwn(payload.customSettings.projectToolsPanel, "width"), false);
-  assert.equal(Object.hasOwn(payload.customSettings.projectToolsPanel, "tabOrders"), false);
+  assert.equal(Object.hasOwn(payload.customSettings, "projectToolsPanel"), false);
   assert.deepEqual(payload.chatRuntimeControls, appSettings.chatRuntimeControls);
   assert.equal(payload.providerApiKeyUpdates, undefined);
 
@@ -988,7 +980,7 @@ test("removes project tools state when a workspace project is deleted", () => {
   assert.deepEqual(tunnelOnlyCleaned.customSettings.projectToolsTunnel.openProjectPathKeys, []);
 });
 
-test("gateway settings sync keeps project tools panel layout local and syncs project active tabs", () => {
+test("gateway settings sync keeps project tools panel local and syncs project tool state", () => {
   const current = settings.normalizeSettings({
     customSettings: {
       projectToolsPanel: {
@@ -1059,14 +1051,7 @@ test("gateway settings sync keeps project tools panel layout local and syncs pro
   });
 
   const payload = sync.buildGatewaySettingsSyncPayload(incoming);
-  assert.deepEqual(payload.customSettings.projectToolsPanel, {
-    activeTabs: {
-      "/web/project": "fileTree",
-    },
-  });
-  assert.equal(Object.hasOwn(payload.customSettings.projectToolsPanel, "activeTab"), false);
-  assert.equal(Object.hasOwn(payload.customSettings.projectToolsPanel, "width"), false);
-  assert.equal(Object.hasOwn(payload.customSettings.projectToolsPanel, "tabOrders"), false);
+  assert.equal(Object.hasOwn(payload.customSettings, "projectToolsPanel"), false);
 
   const synced = sync.applyGatewaySettingsSyncPayload(current, payload);
 
@@ -1074,7 +1059,6 @@ test("gateway settings sync keeps project tools panel layout local and syncs pro
   assert.equal(synced.customSettings.projectToolsPanel.activeTab, "terminal");
   assert.deepEqual(synced.customSettings.projectToolsPanel.activeTabs, {
     "/desktop/project": "terminal",
-    "/web/project": "fileTree",
   });
   assert.deepEqual(synced.customSettings.projectToolsPanel.tabOrders, {
     "/desktop/project": ["desktop-terminal", "__file_tree__"],
@@ -1097,6 +1081,34 @@ test("gateway settings sync keeps project tools panel layout local and syncs pro
     "/web/project",
   ]);
   assert.equal(synced.customSettings.projectToolsTunnel.openVersion, 2);
+
+  const legacyPanelSynced = sync.applyGatewaySettingsSyncPayload(current, {
+    ...payload,
+    customSettings: {
+      ...payload.customSettings,
+      projectToolsPanel: {
+        width: 360,
+        activeTab: "fileTree",
+        activeTabs: {
+          "/web/project": "fileTree",
+        },
+        tabOrders: {
+          "/web/project": ["web-terminal", "__file_tree__"],
+        },
+      },
+    },
+  });
+  assert.equal(legacyPanelSynced.customSettings.projectToolsPanel.width, 612);
+  assert.equal(legacyPanelSynced.customSettings.projectToolsPanel.activeTab, "terminal");
+  assert.deepEqual(legacyPanelSynced.customSettings.projectToolsPanel.activeTabs, {
+    "/desktop/project": "terminal",
+  });
+  assert.deepEqual(legacyPanelSynced.customSettings.projectToolsPanel.tabOrders, {
+    "/desktop/project": ["desktop-terminal", "__file_tree__"],
+  });
+  assert.deepEqual(legacyPanelSynced.customSettings.projectToolsFileTree.openProjectPathKeys, [
+    "/web/project",
+  ]);
 
   const {
     projectToolsFileTree: _projectToolsFileTree,
