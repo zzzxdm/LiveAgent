@@ -598,8 +598,13 @@ function hasSettingsSyncChanged(prev: AppSettings, next: AppSettings) {
   );
 }
 
-function hasProviderApiKeyUpdates(settings: AppSettings) {
-  return settings.customProviders.some((provider) => provider.apiKey.trim().length > 0);
+function hasSensitiveSettingsUpdates(settings: AppSettings) {
+  return (
+    settings.customProviders.some((provider) => provider.apiKey.trim().length > 0) ||
+    settings.ssh.hosts.some(
+      (host) => host.password.trim().length > 0 || host.privateKey.trim().length > 0,
+    )
+  );
 }
 
 function resolveAppWorkspaceProjects(settings: AppSettings): AppSettings {
@@ -2166,7 +2171,7 @@ export default function App() {
         queueSettingsSave(
           rawNext,
           "保存 WebUI 设置失败。",
-          hasSettingsSyncChanged(prev, next) || hasProviderApiKeyUpdates(rawNext),
+          hasSettingsSyncChanged(prev, next) || hasSensitiveSettingsUpdates(rawNext),
         );
         return next;
       });

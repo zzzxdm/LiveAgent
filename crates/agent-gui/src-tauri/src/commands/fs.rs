@@ -29,6 +29,8 @@ const MAX_ZIP_XML_ENTRY_BYTES: usize = 4 * 1024 * 1024;
 
 const DEFAULT_LIST_DEPTH: usize = 2;
 const DEFAULT_PAGE_LIMIT: usize = 200;
+const DEFAULT_LIST_DIRS_MAX_RESULTS: usize = 2000;
+const HARD_LIST_DIRS_MAX_RESULTS: usize = 10000;
 
 const DEFAULT_GREP_HEAD_LIMIT: usize = 200;
 const MAX_GREP_LINE_CHARS: usize = 400;
@@ -2472,6 +2474,168 @@ pub struct ListResponse {
     pub entries: Vec<ListEntry>,
 }
 
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct FsRoot {
+    pub id: String,
+    pub path: String,
+    pub kind: String,
+    pub label: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct FsRootsResponse {
+    pub roots: Vec<FsRoot>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct FsDirEntry {
+    pub path: String,
+    pub name: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct FsListDirsResponse {
+    pub path: String,
+    pub entries: Vec<FsDirEntry>,
+    pub truncated: bool,
+}
+
+pub(crate) fn fs_roots_sync() -> Result<FsRootsResponse, String> {
+    let mut roots: Vec<FsRoot> = Vec::new();
+
+    #[cfg(not(windows))]
+    {
+        roots.push(FsRoot {
+            id: "/".to_string(),
+            path: "/".to_string(),
+            kind: "root".to_string(),
+            label: "/".to_string(),
+        });
+    }
+
+    if let Some(home) = dirs::home_dir() {
+        let home_str = home.to_string_lossy().trim().to_string();
+        if !home_str.is_empty() && home_str != "/" {
+            roots.push(FsRoot {
+                id: home_str.clone(),
+                path: home_str,
+                kind: "home".to_string(),
+                label: "~".to_string(),
+            });
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn GetLogicalDrives() -> u32;
+        }
+
+        let mask = unsafe { GetLogicalDrives() };
+        if mask == 0 {
+            // Keep the picker usable if we at least have home.
+            if !roots.is_empty() {
+                return Ok(FsRootsResponse { roots });
+            }
+            return Err(io::Error::last_os_error().to_string());
+        }
+
+        for i in 0..26u32 {
+            if mask & (1u32 << i) == 0 {
+                continue;
+            }
+            let drive = (b'A' + u8::try_from(i).unwrap_or(0)) as char;
+            let path = format!("{drive}:\\");
+            roots.push(FsRoot {
+                id: path.clone(),
+                path,
+                kind: "drive".to_string(),
+                label: format!("{drive}:"),
+            });
+        }
+    }
+
+    Ok(FsRootsResponse { roots })
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn fs_roots() -> Result<FsRootsResponse, String> {
+    run_blocking("fs_roots", fs_roots_sync).await
+}
+
+pub(crate) fn fs_list_dirs_sync(
+    path: String,
+    max_results: Option<usize>,
+) -> Result<FsListDirsResponse, String> {
+    let dir = path.trim().to_string();
+    if dir.is_empty() {
+        return Err("path is required".to_string());
+    }
+
+    let limit = max_results
+        .unwrap_or(DEFAULT_LIST_DIRS_MAX_RESULTS)
+        .clamp(1, HARD_LIST_DIRS_MAX_RESULTS);
+
+    let entries = fs::read_dir(&dir).map_err(|e| e.to_string())?;
+    let mut dirs: Vec<FsDirEntry> = Vec::new();
+
+    for entry in entries {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let file_type = entry.file_type().map_err(|e| e.to_string())?;
+
+        let mut is_dir = file_type.is_dir();
+        if !is_dir && file_type.is_symlink() {
+            if let Ok(metadata) = entry.metadata() {
+                is_dir = metadata.is_dir();
+            }
+        }
+        if !is_dir {
+            continue;
+        }
+
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let child_path = entry.path().to_string_lossy().into_owned();
+        dirs.push(FsDirEntry {
+            path: display_path(&PathBuf::from(child_path)),
+            name,
+        });
+    }
+
+    dirs.sort_by(|a, b| {
+        let left = a.name.to_lowercase();
+        let right = b.name.to_lowercase();
+        if left == right {
+            a.name.cmp(&b.name)
+        } else {
+            left.cmp(&right)
+        }
+    });
+
+    let truncated = dirs.len() > limit;
+    if truncated {
+        dirs.truncate(limit);
+    }
+
+    Ok(FsListDirsResponse {
+        path: dir,
+        entries: dirs,
+        truncated,
+    })
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn fs_list_dirs(
+    path: String,
+    max_results: Option<usize>,
+) -> Result<FsListDirsResponse, String> {
+    run_blocking("fs_list_dirs", move || fs_list_dirs_sync(path, max_results)).await
+}
+
 fn build_ignore_walker(base: &Path, max_depth: Option<usize>) -> ignore::Walk {
     let mut builder = WalkBuilder::new(base);
     builder
@@ -3724,6 +3888,28 @@ mod tests {
             .expect("delete non-empty dir should succeed");
         assert_eq!(nested_response.kind, "dir");
         assert!(!workdir.join("nested").exists());
+
+        let _ = fs::remove_dir_all(workdir);
+    }
+
+    #[test]
+    fn list_dirs_returns_sorted_directories_and_truncates() {
+        let workdir = unique_test_workdir("list-dirs");
+        fs::create_dir_all(workdir.join("zeta")).expect("create zeta");
+        fs::create_dir_all(workdir.join("Alpha")).expect("create alpha");
+        fs::write(workdir.join("file.txt"), "file").expect("write file");
+
+        let response = fs_list_dirs_sync(workdir.display().to_string(), Some(1))
+            .expect("list dirs should succeed");
+
+        assert_eq!(response.path, workdir.display().to_string());
+        assert!(response.truncated);
+        assert_eq!(response.entries.len(), 1);
+        assert_eq!(response.entries[0].name, "Alpha");
+        assert_eq!(
+            response.entries[0].path,
+            display_path(&workdir.join("Alpha"))
+        );
 
         let _ = fs::remove_dir_all(workdir);
     }

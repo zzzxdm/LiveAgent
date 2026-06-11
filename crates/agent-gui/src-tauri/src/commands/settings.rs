@@ -19,6 +19,7 @@ const PROVIDER_SETTINGS_TABLE: &str = "provider_settings";
 const SYSTEM_SETTINGS_TABLE: &str = "system_settings";
 const MCP_SETTINGS_TABLE: &str = "mcp_settings";
 const AGENT_PROMPT_TEMPLATES_TABLE: &str = "agent_prompt_templates";
+const SSH_SETTINGS_TABLE: &str = "ssh_settings";
 const HOOK_SETTINGS_TABLE: &str = "hook_settings";
 const CRON_SETTINGS_TABLE: &str = "cron_settings";
 const CRON_EXECUTION_LOGS_TABLE: &str = "cron_execution_logs";
@@ -35,6 +36,7 @@ const SYSTEM_MISSING_WORKSPACE_PROJECT_PATHS_KEY: &str = "missingWorkspaceProjec
 const DEFAULT_WORKSPACE_PROJECT_ID: &str = "default-project";
 const DEFAULT_WORKSPACE_PROJECT_NAME: &str = "Default Project";
 pub(crate) const PROVIDER_API_KEY_UPDATES_FIELD: &str = "providerApiKeyUpdates";
+pub(crate) const SSH_SECRET_UPDATES_FIELD: &str = "sshSecretUpdates";
 
 const PROVIDER_SETTINGS_SELECT_SQL: &str = "
     SELECT provider_id, payload_json
@@ -80,6 +82,46 @@ const AGENT_PROMPT_TEMPLATES_INSERT_SQL: &str = "
 ";
 const AGENT_PROMPT_TEMPLATES_DELETE_SQL: &str = "DELETE FROM agent_prompt_templates";
 
+const SSH_SETTINGS_SELECT_SQL: &str = "
+    SELECT
+        host_id,
+        name,
+        description,
+        host,
+        port,
+        username,
+        auth_type,
+        password,
+        password_configured,
+        private_key,
+        private_key_path,
+        private_key_configured,
+        proxy_json
+    FROM ssh_settings
+    ORDER BY sort_index ASC, host_id ASC
+";
+const SSH_SETTINGS_INSERT_SQL: &str = "
+    INSERT INTO ssh_settings (
+        host_id,
+        name,
+        description,
+        host,
+        port,
+        username,
+        auth_type,
+        password,
+        password_configured,
+        private_key,
+        private_key_path,
+        private_key_configured,
+        proxy_json,
+        sort_index,
+        updated_at
+    )
+    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+";
+const SSH_SETTINGS_DELETE_SQL: &str = "DELETE FROM ssh_settings";
+
 const HOOK_SETTINGS_SELECT_SQL: &str = "
     SELECT hook_id, payload_json
     FROM hook_settings
@@ -114,6 +156,7 @@ pub struct SettingsLoadResponse {
     pub system: Option<Value>,
     pub mcp: Option<Value>,
     pub agents: Option<Value>,
+    pub ssh: Option<Value>,
     pub hooks: Option<Value>,
     pub cron: Option<Value>,
     pub remote: Option<Value>,
@@ -291,6 +334,23 @@ pub(crate) fn initialize_schema(conn: &Connection) -> Result<(), String> {
             tags_json TEXT NOT NULL,
             prompt TEXT NOT NULL,
             enabled INTEGER NOT NULL DEFAULT 0,
+            sort_index INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS ssh_settings (
+            host_id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            description TEXT NOT NULL,
+            host TEXT NOT NULL,
+            port INTEGER NOT NULL,
+            username TEXT NOT NULL,
+            auth_type TEXT NOT NULL,
+            password TEXT NOT NULL,
+            password_configured INTEGER NOT NULL DEFAULT 0,
+            private_key TEXT NOT NULL,
+            private_key_path TEXT NOT NULL,
+            private_key_configured INTEGER NOT NULL DEFAULT 0,
+            proxy_json TEXT NOT NULL,
             sort_index INTEGER NOT NULL,
             updated_at INTEGER NOT NULL
         );
@@ -1303,6 +1363,13 @@ pub(crate) fn load_gateway_settings_sync_snapshot(conn: &Connection) -> Result<V
         load_agents(conn)?.unwrap_or(Value::Array(Vec::new())),
     );
     snapshot.insert(
+        "ssh".to_string(),
+        redact_ssh_settings(load_ssh(conn)?.unwrap_or(Value::Object(Map::from_iter([(
+            "hosts".to_string(),
+            Value::Array(Vec::new()),
+        )]))))?,
+    );
+    snapshot.insert(
         "hooks".to_string(),
         load_hooks(conn)?.unwrap_or(Value::Array(Vec::new())),
     );
@@ -1348,16 +1415,84 @@ pub(crate) fn load_gateway_settings_sync_snapshot(conn: &Connection) -> Result<V
 pub(crate) fn redact_gateway_settings_sync_payload(payload: Value) -> Result<Value, String> {
     let mut snapshot = expect_object(payload, "gateway settings sync payload")?;
     snapshot.remove(PROVIDER_API_KEY_UPDATES_FIELD);
+    snapshot.remove(SSH_SECRET_UPDATES_FIELD);
     if let Some(providers) = snapshot.remove("customProviders") {
         snapshot.insert(
             "customProviders".to_string(),
             redact_provider_credentials(providers)?,
         );
     }
+    if let Some(ssh) = snapshot.remove("ssh") {
+        snapshot.insert("ssh".to_string(), redact_ssh_settings(ssh)?);
+    }
     if let Some(remote) = snapshot.remove("remote") {
         snapshot.insert("remote".to_string(), redact_remote_settings(remote)?);
     }
     Ok(Value::Object(snapshot))
+}
+
+fn redact_ssh_settings(ssh: Value) -> Result<Value, String> {
+    let mut ssh = expect_object(ssh, "ssh settings payload")?;
+    let hosts = expect_array(
+        ssh.remove("hosts").unwrap_or(Value::Array(Vec::new())),
+        "ssh settings hosts",
+    )?;
+    let redacted = hosts
+        .into_iter()
+        .map(redact_ssh_host_secret)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Value::Object(Map::from_iter([(
+        "hosts".to_string(),
+        Value::Array(redacted),
+    )])))
+}
+
+fn redact_ssh_host_secret(host: Value) -> Result<Value, String> {
+    let mut payload = expect_object(host, "ssh settings host")?;
+    let password_configured =
+        match payload.remove("password") {
+            Some(Value::String(value)) => !value.trim().is_empty(),
+            Some(Value::Null) | None => false,
+            Some(_) => return Err("ssh settings password must be a string".to_string()),
+        } || matches!(payload.get("passwordConfigured"), Some(Value::Bool(true)));
+    let private_key_configured = match payload.remove("privateKey") {
+        Some(Value::String(value)) => !value.trim().is_empty(),
+        Some(Value::Null) | None => false,
+        Some(_) => return Err("ssh settings privateKey must be a string".to_string()),
+    } || payload
+        .get("privateKeyPath")
+        .and_then(Value::as_str)
+        .is_some_and(|value| !value.trim().is_empty())
+        || matches!(payload.get("privateKeyConfigured"), Some(Value::Bool(true)));
+    payload.insert(
+        "passwordConfigured".to_string(),
+        Value::Bool(password_configured),
+    );
+    payload.insert(
+        "privateKeyConfigured".to_string(),
+        Value::Bool(private_key_configured),
+    );
+    if let Some(proxy) = payload.remove("proxy") {
+        if !matches!(proxy, Value::Null) {
+            payload.insert("proxy".to_string(), redact_ssh_proxy_secret(proxy)?);
+        }
+    }
+    Ok(Value::Object(payload))
+}
+
+fn redact_ssh_proxy_secret(proxy: Value) -> Result<Value, String> {
+    let mut payload = expect_object(proxy, "ssh settings proxy")?;
+    let password_configured =
+        match payload.remove("password") {
+            Some(Value::String(value)) => !value.trim().is_empty(),
+            Some(Value::Null) | None => false,
+            Some(_) => return Err("ssh settings proxy.password must be a string".to_string()),
+        } || matches!(payload.get("passwordConfigured"), Some(Value::Bool(true)));
+    payload.insert(
+        "passwordConfigured".to_string(),
+        Value::Bool(password_configured),
+    );
+    Ok(Value::Object(payload))
 }
 
 fn redact_remote_settings(remote: Value) -> Result<Value, String> {
@@ -1450,6 +1585,80 @@ fn load_agents(conn: &Connection) -> Result<Option<Value>, String> {
         Ok(None)
     } else {
         Ok(Some(Value::Array(templates)))
+    }
+}
+
+fn load_ssh(conn: &Connection) -> Result<Option<Value>, String> {
+    let mut stmt = conn
+        .prepare(SSH_SETTINGS_SELECT_SQL)
+        .map_err(|e| format!("准备读取 {SSH_SETTINGS_TABLE} 失败：{e}"))?;
+    let rows = stmt
+        .query_map([], |row| {
+            let proxy_json = row.get::<_, String>(12)?;
+            let proxy = parse_json(&proxy_json, SSH_SETTINGS_TABLE).map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    12,
+                    rusqlite::types::Type::Text,
+                    Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, error)),
+                )
+            })?;
+            Ok(Value::Object(Map::from_iter([
+                ("id".to_string(), Value::String(row.get::<_, String>(0)?)),
+                ("name".to_string(), Value::String(row.get::<_, String>(1)?)),
+                (
+                    "description".to_string(),
+                    Value::String(row.get::<_, String>(2)?),
+                ),
+                ("host".to_string(), Value::String(row.get::<_, String>(3)?)),
+                (
+                    "port".to_string(),
+                    Value::Number(Number::from(row.get::<_, i64>(4)?)),
+                ),
+                (
+                    "username".to_string(),
+                    Value::String(row.get::<_, String>(5)?),
+                ),
+                (
+                    "authType".to_string(),
+                    Value::String(row.get::<_, String>(6)?),
+                ),
+                (
+                    "password".to_string(),
+                    Value::String(row.get::<_, String>(7)?),
+                ),
+                (
+                    "passwordConfigured".to_string(),
+                    Value::Bool(row.get::<_, i64>(8)? != 0),
+                ),
+                (
+                    "privateKey".to_string(),
+                    Value::String(row.get::<_, String>(9)?),
+                ),
+                (
+                    "privateKeyPath".to_string(),
+                    Value::String(row.get::<_, String>(10)?),
+                ),
+                (
+                    "privateKeyConfigured".to_string(),
+                    Value::Bool(row.get::<_, i64>(11)? != 0),
+                ),
+                ("proxy".to_string(), proxy),
+            ])))
+        })
+        .map_err(|e| format!("读取 {SSH_SETTINGS_TABLE} 失败：{e}"))?;
+
+    let mut hosts = Vec::new();
+    for row in rows {
+        hosts.push(row.map_err(|e| format!("读取 {SSH_SETTINGS_TABLE} 行失败：{e}"))?);
+    }
+
+    if hosts.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(Value::Object(Map::from_iter([(
+            "hosts".to_string(),
+            Value::Array(hosts),
+        )]))))
     }
 }
 
@@ -1644,6 +1853,252 @@ fn save_agents(conn: &mut Connection, payload: Value) -> Result<(), String> {
 
     tx.commit()
         .map_err(|e| format!("提交 {AGENT_PROMPT_TEMPLATES_TABLE} 事务失败：{e}"))?;
+    Ok(())
+}
+
+fn validate_ssh_auth_type(value: Option<&Value>, label: &str) -> Result<String, String> {
+    let auth_type = value
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or("password");
+    match auth_type {
+        "password" | "privateKey" => Ok(auth_type.to_string()),
+        other => Err(format!("{label}.authType 不支持：{other}")),
+    }
+}
+
+fn validate_ssh_port(value: Option<&Value>, label: &str) -> Result<i64, String> {
+    let port = match value {
+        Some(Value::Number(number)) => number
+            .as_i64()
+            .ok_or_else(|| format!("{label}.port 必须是 1-65535 的整数"))?,
+        Some(Value::String(text)) if text.trim().is_empty() => 22,
+        Some(Value::String(text)) => text
+            .trim()
+            .parse::<i64>()
+            .map_err(|_| format!("{label}.port 必须是 1-65535 的整数"))?,
+        Some(Value::Null) | None => 22,
+        Some(_) => return Err(format!("{label}.port 必须是 1-65535 的整数")),
+    };
+
+    if (1..=65535).contains(&port) {
+        Ok(port)
+    } else {
+        Err(format!("{label}.port 必须是 1-65535 的整数"))
+    }
+}
+
+fn validate_ssh_proxy_port(value: Option<&Value>, label: &str) -> Result<i64, String> {
+    let port = match value {
+        Some(Value::Number(number)) => number
+            .as_i64()
+            .ok_or_else(|| format!("{label}.port 必须是 0 或 1-65535 的整数"))?,
+        Some(Value::String(text)) if text.trim().is_empty() => 0,
+        Some(Value::String(text)) => text
+            .trim()
+            .parse::<i64>()
+            .map_err(|_| format!("{label}.port 必须是 0 或 1-65535 的整数"))?,
+        Some(Value::Null) | None => 0,
+        Some(_) => return Err(format!("{label}.port 必须是 0 或 1-65535 的整数")),
+    };
+
+    if port == 0 || (1..=65535).contains(&port) {
+        Ok(port)
+    } else {
+        Err(format!("{label}.port 必须是 0 或 1-65535 的整数"))
+    }
+}
+
+fn validate_ssh_proxy_type(value: Option<&Value>, label: &str) -> Result<String, String> {
+    let proxy_type = match value {
+        Some(Value::String(text)) if text.trim() == "http" => "http",
+        Some(Value::String(text)) if text.trim().is_empty() || text.trim() == "socks5" => "socks5",
+        Some(Value::Null) | None => "socks5",
+        _ => return Err(format!("{label}.type 必须是 socks5 或 http")),
+    };
+    Ok(proxy_type.to_string())
+}
+
+fn validate_and_normalize_ssh_proxy(
+    proxy: Option<&Value>,
+    label: &str,
+) -> Result<Map<String, Value>, String> {
+    let proxy = match proxy {
+        Some(Value::Object(map)) => map,
+        Some(Value::Null) | None => {
+            let mut payload = Map::new();
+            payload.insert("type".to_string(), Value::String("socks5".to_string()));
+            payload.insert("url".to_string(), Value::String(String::new()));
+            payload.insert("port".to_string(), Value::Number(Number::from(0)));
+            payload.insert("username".to_string(), Value::String(String::new()));
+            payload.insert("password".to_string(), Value::String(String::new()));
+            payload.insert("passwordConfigured".to_string(), Value::Bool(false));
+            return Ok(payload);
+        }
+        Some(_) => return Err(format!("{label}.proxy 必须是对象")),
+    };
+    let proxy_label = format!("{label}.proxy");
+    let proxy_type = validate_ssh_proxy_type(proxy.get("type"), &proxy_label)?;
+    let url = extract_optional_string(proxy, "url");
+    let port = validate_ssh_proxy_port(proxy.get("port"), &proxy_label)?;
+    let username = extract_optional_string(proxy, "username");
+    let password = extract_optional_string(proxy, "password");
+    let password_configured =
+        extract_bool_with_default(proxy, "passwordConfigured", &proxy_label, false)?
+            || !password.is_empty();
+
+    let mut payload = Map::new();
+    payload.insert("type".to_string(), Value::String(proxy_type));
+    payload.insert("url".to_string(), Value::String(url));
+    payload.insert("port".to_string(), Value::Number(Number::from(port)));
+    payload.insert("username".to_string(), Value::String(username));
+    payload.insert("password".to_string(), Value::String(password));
+    payload.insert(
+        "passwordConfigured".to_string(),
+        Value::Bool(password_configured),
+    );
+    Ok(payload)
+}
+
+fn validate_and_normalize_ssh_host(
+    host: Map<String, Value>,
+    label: &str,
+) -> Result<(String, Map<String, Value>), String> {
+    let host_id = extract_non_empty_string(&host, "id", label)?;
+    let name = extract_non_empty_string(&host, "name", label)?;
+    let hostname = extract_non_empty_string(&host, "host", label)?;
+    let auth_type = validate_ssh_auth_type(host.get("authType"), label)?;
+    let port = validate_ssh_port(host.get("port"), label)?;
+    let username = extract_optional_string(&host, "username");
+    let description = extract_optional_string(&host, "description");
+    let password = extract_optional_string(&host, "password");
+    let private_key = extract_optional_string(&host, "privateKey");
+    let private_key_path = extract_optional_string(&host, "privateKeyPath");
+    let password_configured = extract_bool_with_default(&host, "passwordConfigured", label, false)?
+        || !password.is_empty();
+    let private_key_configured =
+        extract_bool_with_default(&host, "privateKeyConfigured", label, false)?
+            || !private_key.is_empty()
+            || !private_key_path.is_empty();
+    let proxy = validate_and_normalize_ssh_proxy(host.get("proxy"), label)?;
+
+    let mut payload = Map::new();
+    payload.insert("name".to_string(), Value::String(name));
+    payload.insert("description".to_string(), Value::String(description));
+    payload.insert("host".to_string(), Value::String(hostname));
+    payload.insert("port".to_string(), Value::Number(Number::from(port)));
+    payload.insert("username".to_string(), Value::String(username));
+    payload.insert("authType".to_string(), Value::String(auth_type));
+    payload.insert("password".to_string(), Value::String(password));
+    payload.insert(
+        "passwordConfigured".to_string(),
+        Value::Bool(password_configured),
+    );
+    payload.insert("privateKey".to_string(), Value::String(private_key));
+    payload.insert(
+        "privateKeyPath".to_string(),
+        Value::String(private_key_path),
+    );
+    payload.insert(
+        "privateKeyConfigured".to_string(),
+        Value::Bool(private_key_configured),
+    );
+    payload.insert("proxy".to_string(), Value::Object(proxy));
+
+    Ok((host_id, payload))
+}
+
+fn ssh_payload_string(payload: &Map<String, Value>, key: &str) -> Result<String, String> {
+    payload
+        .get(key)
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+        .ok_or_else(|| format!("{SSH_SETTINGS_TABLE}.{key} 必须是字符串"))
+}
+
+fn ssh_payload_i64(payload: &Map<String, Value>, key: &str) -> Result<i64, String> {
+    payload
+        .get(key)
+        .and_then(Value::as_i64)
+        .ok_or_else(|| format!("{SSH_SETTINGS_TABLE}.{key} 必须是整数"))
+}
+
+fn ssh_payload_bool(payload: &Map<String, Value>, key: &str) -> Result<bool, String> {
+    payload
+        .get(key)
+        .and_then(Value::as_bool)
+        .ok_or_else(|| format!("{SSH_SETTINGS_TABLE}.{key} 必须是布尔值"))
+}
+
+fn ssh_payload_proxy_json(payload: &Map<String, Value>) -> Result<String, String> {
+    let proxy = payload
+        .get("proxy")
+        .cloned()
+        .ok_or_else(|| format!("{SSH_SETTINGS_TABLE}.proxy 不能为空"))?;
+    serialize_json(&proxy, SSH_SETTINGS_TABLE)
+}
+
+fn insert_ssh_settings_row(
+    conn: &Connection,
+    host_id: &str,
+    payload: &Map<String, Value>,
+    sort_index: i64,
+    updated_at: i64,
+) -> Result<(), String> {
+    conn.execute(
+        SSH_SETTINGS_INSERT_SQL,
+        params![
+            host_id,
+            ssh_payload_string(payload, "name")?,
+            ssh_payload_string(payload, "description")?,
+            ssh_payload_string(payload, "host")?,
+            ssh_payload_i64(payload, "port")?,
+            ssh_payload_string(payload, "username")?,
+            ssh_payload_string(payload, "authType")?,
+            ssh_payload_string(payload, "password")?,
+            ssh_payload_bool(payload, "passwordConfigured")?,
+            ssh_payload_string(payload, "privateKey")?,
+            ssh_payload_string(payload, "privateKeyPath")?,
+            ssh_payload_bool(payload, "privateKeyConfigured")?,
+            ssh_payload_proxy_json(payload)?,
+            sort_index,
+            updated_at
+        ],
+    )
+    .map_err(|e| format!("写入 {SSH_SETTINGS_TABLE} 失败：{e}"))?;
+    Ok(())
+}
+
+fn save_ssh(conn: &mut Connection, payload: Value) -> Result<(), String> {
+    let ssh = expect_object(payload, "settings_save_ssh payload")?;
+    let hosts = expect_array(
+        ssh.get("hosts")
+            .cloned()
+            .unwrap_or(Value::Array(Vec::new())),
+        "settings_save_ssh payload.hosts",
+    )?;
+    let updated_at = now_ms();
+    let tx = conn
+        .transaction()
+        .map_err(|e| format!("开启 {SSH_SETTINGS_TABLE} 事务失败：{e}"))?;
+    tx.execute(SSH_SETTINGS_DELETE_SQL, [])
+        .map_err(|e| format!("清空 {SSH_SETTINGS_TABLE} 失败：{e}"))?;
+
+    let mut seen = HashSet::new();
+    for (sort_index, host) in hosts.into_iter().enumerate() {
+        let (host_id, payload) = validate_and_normalize_ssh_host(
+            expect_object(host, "settings_save_ssh payload.hosts[]")?,
+            "settings_save_ssh payload.hosts[]",
+        )?;
+        if !seen.insert(host_id.clone()) {
+            return Err(format!("{SSH_SETTINGS_TABLE}.host_id 重复：{host_id}"));
+        }
+
+        insert_ssh_settings_row(&tx, &host_id, &payload, sort_index as i64, updated_at)?;
+    }
+
+    tx.commit()
+        .map_err(|e| format!("提交 {SSH_SETTINGS_TABLE} 事务失败：{e}"))?;
     Ok(())
 }
 
@@ -1895,6 +2350,7 @@ pub async fn settings_load_all() -> Result<SettingsLoadResponse, String> {
             system: Some(load_system_with_defaults(&conn, &default_workdir)?),
             mcp: load_mcp(&conn)?,
             agents: load_agents(&conn)?,
+            ssh: load_ssh(&conn)?,
             hooks: load_hooks(&conn)?,
             cron: load_cron(&conn)?,
             remote: load_remote(&conn)?,
@@ -1979,6 +2435,16 @@ pub async fn settings_save_agents(payload: Value) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub async fn settings_save_ssh(payload: Value) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut conn = open_db()?;
+        save_ssh(&mut conn, payload)
+    })
+    .await
+    .map_err(|e| format!("settings_save_ssh join 失败：{e}"))?
+}
+
+#[tauri::command]
 pub async fn settings_save_hooks(payload: Value) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         let mut conn = open_db()?;
@@ -2014,6 +2480,16 @@ mod tests {
         conn
     }
 
+    fn table_columns(conn: &Connection, table: &str) -> Vec<String> {
+        let mut stmt = conn
+            .prepare(&format!("PRAGMA table_info({table})"))
+            .expect("prepare table info");
+        stmt.query_map([], |row| row.get::<_, String>(1))
+            .expect("query table info")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect table columns")
+    }
+
     #[test]
     fn initialize_schema_creates_all_tables() {
         let conn = open_memory_db();
@@ -2023,6 +2499,7 @@ mod tests {
             SYSTEM_SETTINGS_TABLE,
             MCP_SETTINGS_TABLE,
             AGENT_PROMPT_TEMPLATES_TABLE,
+            SSH_SETTINGS_TABLE,
             HOOK_SETTINGS_TABLE,
             CRON_SETTINGS_TABLE,
             CRON_EXECUTION_LOGS_TABLE,
@@ -2038,6 +2515,39 @@ mod tests {
                 .expect("query sqlite_master");
             assert_eq!(exists, 1, "table {table} should exist");
         }
+    }
+
+    #[test]
+    fn initialize_schema_creates_columnar_ssh_settings_table() {
+        let conn = open_memory_db();
+        let columns = table_columns(&conn, SSH_SETTINGS_TABLE);
+
+        for column in [
+            "host_id",
+            "name",
+            "description",
+            "host",
+            "port",
+            "username",
+            "auth_type",
+            "password",
+            "password_configured",
+            "private_key",
+            "private_key_path",
+            "private_key_configured",
+            "proxy_json",
+            "sort_index",
+            "updated_at",
+        ] {
+            assert!(
+                columns.iter().any(|item| item == column),
+                "{SSH_SETTINGS_TABLE}.{column} should exist"
+            );
+        }
+        assert!(
+            !columns.iter().any(|item| item == "payload_json"),
+            "{SSH_SETTINGS_TABLE}.payload_json should not exist"
+        );
     }
 
     #[test]
@@ -2144,6 +2654,172 @@ mod tests {
         assert_eq!(snapshot["customProviders"][0]["apiKeyConfigured"], true);
         assert_eq!(snapshot["customProviders"][1]["apiKey"], Value::Null);
         assert_eq!(snapshot["customProviders"][1]["apiKeyConfigured"], true);
+    }
+
+    #[test]
+    fn save_ssh_persists_hosts_and_redacts_sync_snapshot() {
+        let mut conn = open_memory_db();
+        save_ssh(
+            &mut conn,
+            json!({
+                "hosts": [
+                    {
+                        "id": "prod",
+                        "name": "Production",
+                        "description": "Primary production host",
+                        "host": "prod.example.com",
+                        "port": "2222",
+                        "username": "deploy",
+                        "authType": "privateKey",
+                        "password": "ssh-password",
+                        "privateKey": "-----BEGIN OPENSSH PRIVATE KEY-----\nsecret\n-----END OPENSSH PRIVATE KEY-----",
+                        "privateKeyPath": "~/.ssh/id_ed25519",
+                        "proxy": {
+                            "type": "http",
+                            "url": "http://127.0.0.1",
+                            "port": "1080",
+                            "username": "proxy-user",
+                            "password": "proxy-password"
+                        }
+                    },
+                    {
+                        "id": "staging",
+                        "name": "Staging",
+                        "description": "",
+                        "host": "staging.example.com",
+                        "username": "ubuntu",
+                        "authType": "password",
+                        "passwordConfigured": true
+                    }
+                ]
+            }),
+        )
+        .expect("save ssh settings");
+
+        let row_count = conn
+            .query_row("SELECT COUNT(*) FROM ssh_settings", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .expect("count ssh rows");
+        let loaded = load_ssh(&conn).expect("load ssh settings");
+
+        assert_eq!(row_count, 2);
+        let stored = conn
+            .query_row(
+                "
+                SELECT name, host, port, auth_type, private_key, proxy_json
+                FROM ssh_settings
+                WHERE host_id = 'prod'
+                ",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                    ))
+                },
+            )
+            .expect("load stored ssh columns");
+        assert_eq!(stored.0, "Production");
+        assert_eq!(stored.1, "prod.example.com");
+        assert_eq!(stored.2, 2222);
+        assert_eq!(stored.3, "privateKey");
+        assert_eq!(
+            stored.4,
+            "-----BEGIN OPENSSH PRIVATE KEY-----\nsecret\n-----END OPENSSH PRIVATE KEY-----"
+        );
+        assert_eq!(
+            parse_json(&stored.5, SSH_SETTINGS_TABLE).expect("parse proxy json"),
+            json!({
+                "type": "http",
+                "url": "http://127.0.0.1",
+                "port": 1080,
+                "username": "proxy-user",
+                "password": "proxy-password",
+                "passwordConfigured": true
+            })
+        );
+        assert_eq!(
+            loaded,
+            Some(json!({
+                "hosts": [
+                    {
+                        "id": "prod",
+                        "name": "Production",
+                        "description": "Primary production host",
+                        "host": "prod.example.com",
+                        "port": 2222,
+                        "username": "deploy",
+                        "authType": "privateKey",
+                        "password": "ssh-password",
+                        "passwordConfigured": true,
+                        "privateKey": "-----BEGIN OPENSSH PRIVATE KEY-----\nsecret\n-----END OPENSSH PRIVATE KEY-----",
+                        "privateKeyPath": "~/.ssh/id_ed25519",
+                        "privateKeyConfigured": true,
+                        "proxy": {
+                            "type": "http",
+                            "url": "http://127.0.0.1",
+                            "port": 1080,
+                            "username": "proxy-user",
+                            "password": "proxy-password",
+                            "passwordConfigured": true
+                        }
+                    },
+                    {
+                        "id": "staging",
+                        "name": "Staging",
+                        "description": "",
+                        "host": "staging.example.com",
+                        "port": 22,
+                        "username": "ubuntu",
+                        "authType": "password",
+                        "password": "",
+                        "passwordConfigured": true,
+                        "privateKey": "",
+                        "privateKeyPath": "",
+                        "privateKeyConfigured": false,
+                        "proxy": {
+                            "type": "socks5",
+                            "url": "",
+                            "port": 0,
+                            "username": "",
+                            "password": "",
+                            "passwordConfigured": false
+                        }
+                    }
+                ]
+            }))
+        );
+
+        let snapshot =
+            load_gateway_settings_sync_snapshot(&conn).expect("load gateway settings snapshot");
+        assert_eq!(snapshot["ssh"]["hosts"][0]["password"], Value::Null);
+        assert_eq!(snapshot["ssh"]["hosts"][0]["privateKey"], Value::Null);
+        assert_eq!(snapshot["ssh"]["hosts"][0]["passwordConfigured"], true);
+        assert_eq!(snapshot["ssh"]["hosts"][0]["privateKeyConfigured"], true);
+        assert_eq!(
+            snapshot["ssh"]["hosts"][0]["proxy"]["password"],
+            Value::Null
+        );
+        assert_eq!(
+            snapshot["ssh"]["hosts"][0]["proxy"]["passwordConfigured"],
+            true
+        );
+        assert_eq!(snapshot["ssh"]["hosts"][1]["password"], Value::Null);
+        assert_eq!(snapshot["ssh"]["hosts"][1]["privateKey"], Value::Null);
+        assert_eq!(snapshot["ssh"]["hosts"][1]["passwordConfigured"], true);
+        assert_eq!(
+            snapshot["ssh"]["hosts"][1]["proxy"]["password"],
+            Value::Null
+        );
+        assert_eq!(
+            snapshot["ssh"]["hosts"][1]["proxy"]["passwordConfigured"],
+            false
+        );
     }
 
     #[test]

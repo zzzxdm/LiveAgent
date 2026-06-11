@@ -235,6 +235,38 @@ export type AgentPromptTemplate = {
   enabled: boolean;
 };
 
+export type SshAuthType = "password" | "privateKey";
+export type SshProxyType = "socks5" | "http";
+
+export type SshProxyConfig = {
+  type: SshProxyType;
+  url: string;
+  port: number;
+  username: string;
+  password: string;
+  passwordConfigured?: boolean;
+};
+
+export type SshHostConfig = {
+  id: string;
+  name: string;
+  description: string;
+  host: string;
+  port: number;
+  username: string;
+  authType: SshAuthType;
+  password: string;
+  passwordConfigured?: boolean;
+  privateKey: string;
+  privateKeyPath: string;
+  privateKeyConfigured?: boolean;
+  proxy: SshProxyConfig;
+};
+
+export type SshSettings = {
+  hosts: SshHostConfig[];
+};
+
 export type CustomProvider = {
   id: string;
   name: string;
@@ -271,6 +303,7 @@ export type AppSettings = {
   customProviders: CustomProvider[];
   mcp: McpSettings;
   agents: AgentPromptTemplate[];
+  ssh: SshSettings;
   hooks: ConversationHook[];
   cron: CronTask[];
   remote: RemoteSettings;
@@ -1212,6 +1245,86 @@ export function normalizeAgentPromptTemplate(input: unknown): AgentPromptTemplat
   };
 }
 
+function normalizeSshAuthType(input: unknown): SshAuthType {
+  return input === "privateKey" ? "privateKey" : "password";
+}
+
+function normalizeSshPort(input: unknown): number {
+  const value = typeof input === "number" || typeof input === "string" ? Number(input) : 22;
+  if (!Number.isFinite(value)) return 22;
+  const port = Math.floor(value);
+  return port >= 1 && port <= 65535 ? port : 22;
+}
+
+function normalizeSshProxyPort(input: unknown): number {
+  const value = typeof input === "number" || typeof input === "string" ? Number(input) : 0;
+  if (!Number.isFinite(value)) return 0;
+  const port = Math.floor(value);
+  return port >= 1 && port <= 65535 ? port : 0;
+}
+
+function normalizeSshProxyType(input: unknown): SshProxyType {
+  return input === "http" ? "http" : "socks5";
+}
+
+export function normalizeSshProxyConfig(input: unknown): SshProxyConfig {
+  const obj = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
+  const password = normalizeOptionalText(obj.password);
+  return {
+    type: normalizeSshProxyType(obj.type),
+    url: normalizeOptionalText(obj.url),
+    port: normalizeSshProxyPort(obj.port),
+    username: typeof obj.username === "string" ? obj.username.trim() : "",
+    password,
+    passwordConfigured: password.length > 0 || obj.passwordConfigured === true,
+  };
+}
+
+export function normalizeSshHostConfig(input: unknown): SshHostConfig {
+  const obj = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
+  const host = typeof obj.host === "string" ? obj.host.trim() : "";
+  const name =
+    typeof obj.name === "string" && obj.name.trim() ? obj.name.trim() : host || "未命名 SSH";
+  const password = normalizeOptionalText(obj.password);
+  const privateKey = normalizeOptionalText(obj.privateKey);
+  const privateKeyPath = normalizeOptionalText(obj.privateKeyPath);
+
+  return {
+    id: typeof obj.id === "string" && obj.id.trim() ? obj.id.trim() : crypto.randomUUID(),
+    name,
+    description: normalizeOptionalText(obj.description),
+    host,
+    port: normalizeSshPort(obj.port),
+    username: typeof obj.username === "string" ? obj.username.trim() : "",
+    authType: normalizeSshAuthType(obj.authType),
+    password,
+    passwordConfigured: password.length > 0 || obj.passwordConfigured === true,
+    privateKey,
+    privateKeyPath,
+    privateKeyConfigured:
+      privateKey.length > 0 || privateKeyPath.length > 0 || obj.privateKeyConfigured === true,
+    proxy: normalizeSshProxyConfig(obj.proxy),
+  };
+}
+
+export function normalizeSshSettings(input: unknown): SshSettings {
+  const obj = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
+  const sourceHosts = Array.isArray(obj.hosts) ? obj.hosts : [];
+  const seenIds = new Set<string>();
+  const hosts = sourceHosts.map((host) => {
+    const normalized = normalizeSshHostConfig(host);
+    if (!seenIds.has(normalized.id)) {
+      seenIds.add(normalized.id);
+      return normalized;
+    }
+    const id = crypto.randomUUID();
+    seenIds.add(id);
+    return { ...normalized, id };
+  });
+
+  return { hosts };
+}
+
 export function normalizeSystemSettings(input: unknown): SystemSettings {
   const obj = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
   return {
@@ -1546,9 +1659,7 @@ export function normalizeProjectToolsGitReviewSettings(
   };
 }
 
-export function normalizeProjectToolsTunnelSettings(
-  input: unknown,
-): ProjectToolsTunnelSettings {
+export function normalizeProjectToolsTunnelSettings(input: unknown): ProjectToolsTunnelSettings {
   const obj = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
   const openProjectPathKeys = Array.from(
     new Set(
@@ -1579,10 +1690,9 @@ export function normalizeProjectToolsPanelTabOrder(input: unknown): string[] {
 }
 
 function isProjectToolsPanelTab(input: unknown): input is ProjectToolsPanelTab {
-  return input === "terminal" ||
-    input === "fileTree" ||
-    input === "gitReview" ||
-    input === "tunnel";
+  return (
+    input === "terminal" || input === "fileTree" || input === "gitReview" || input === "tunnel"
+  );
 }
 
 export function normalizeProjectToolsPanelActiveTab(input: unknown): ProjectToolsPanelTab {
@@ -1704,6 +1814,9 @@ export function getDefaultSettings(): AppSettings {
       selected: [],
     },
     agents: [],
+    ssh: {
+      hosts: [],
+    },
     hooks: [],
     cron: [],
     remote: {
@@ -1749,6 +1862,7 @@ export function normalizeSettings(input?: Partial<AppSettings> | null): AppSetti
     customProviders,
     mcp: normalizeMcpSettings(obj.mcp ?? defaults.mcp),
     agents: normalizeAgentPromptTemplates(obj.agents ?? defaults.agents),
+    ssh: normalizeSshSettings(obj.ssh ?? defaults.ssh),
     hooks: normalizeConversationHooks(obj.hooks ?? defaults.hooks),
     cron: normalizeCronTasks(obj.cron ?? defaults.cron),
     remote: normalizeRemoteSettings(obj.remote ?? defaults.remote),
@@ -1792,6 +1906,16 @@ export function updateAgents(prev: AppSettings, agents: AgentPromptTemplate[]): 
   return normalizeSettings({
     ...prev,
     agents,
+  });
+}
+
+export function updateSsh(prev: AppSettings, patch: Partial<SshSettings>): AppSettings {
+  return normalizeSettings({
+    ...prev,
+    ssh: {
+      ...prev.ssh,
+      ...patch,
+    },
   });
 }
 

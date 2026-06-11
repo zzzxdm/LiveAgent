@@ -30,6 +30,7 @@ type PersistedSettingsResponse = {
   system?: unknown | null;
   mcp?: unknown | null;
   agents?: unknown | null;
+  ssh?: unknown | null;
   hooks?: unknown | null;
   cron?: unknown | null;
   remote?: unknown | null;
@@ -215,6 +216,7 @@ export async function loadPersistedSettingsWithDefaults(): Promise<PersistedSett
     customProviders: (persisted?.providers ?? defaults.customProviders) as AppSettings["customProviders"],
     mcp: (persisted?.mcp ?? defaults.mcp) as AppSettings["mcp"],
     agents: (persisted?.agents ?? defaults.agents) as AppSettings["agents"],
+    ssh: (persisted?.ssh ?? defaults.ssh) as AppSettings["ssh"],
     hooks: (persisted?.hooks ?? defaults.hooks) as AppSettings["hooks"],
     cron: (persisted?.cron ?? defaults.cron) as AppSettings["cron"],
     remote: (persisted?.remote ?? defaults.remote) as AppSettings["remote"],
@@ -273,6 +275,14 @@ export async function persistSettings(prev: AppSettings, next: AppSettings): Pro
     tasks.push(
       invoke("settings_save_agents", {
         payload: next.agents,
+      } as any),
+    );
+  }
+
+  if (hasChanged(prev.ssh, next.ssh)) {
+    tasks.push(
+      invoke("settings_save_ssh", {
+        payload: next.ssh,
       } as any),
     );
   }

@@ -259,6 +259,138 @@ test("gateway settings sync keeps remote connection local and syncs web terminal
   assert.deepEqual(payload.chatRuntimeControls, synced.chatRuntimeControls);
 });
 
+test("ssh settings sync redacts stored secrets and carries one-shot secret updates", () => {
+  installWindow();
+  const source = settings.normalizeSettings({
+    ssh: {
+      hosts: [
+        {
+          id: "ssh-prod",
+          name: "Prod",
+          description: "Production jump host",
+          host: "prod.example.com",
+          port: 2222,
+          username: "deploy",
+          authType: "privateKey",
+          password: "ssh-password",
+          privateKey: "-----BEGIN OPENSSH PRIVATE KEY-----",
+          privateKeyPath: "~/.ssh/prod",
+          proxy: {
+            type: "http",
+            url: "http://127.0.0.1",
+            port: 1080,
+            username: "proxy-user",
+            password: "proxy-password",
+          },
+        },
+      ],
+    },
+  });
+
+  const redacted = settingsSync.redactSettingsForWebStorage(source);
+  assert.equal(redacted.ssh.hosts[0].password, "");
+  assert.equal(redacted.ssh.hosts[0].privateKey, "");
+  assert.equal(redacted.ssh.hosts[0].proxy.type, "http");
+  assert.equal(redacted.ssh.hosts[0].proxy.password, "");
+  assert.equal(redacted.ssh.hosts[0].passwordConfigured, true);
+  assert.equal(redacted.ssh.hosts[0].privateKeyConfigured, true);
+  assert.equal(redacted.ssh.hosts[0].proxy.passwordConfigured, true);
+
+  const publicPayload = settingsSync.buildGatewaySettingsSyncPayload(source);
+  assert.equal(publicPayload.ssh.hosts[0].password, "");
+  assert.equal(publicPayload.ssh.hosts[0].privateKey, "");
+  assert.equal(publicPayload.ssh.hosts[0].proxy.type, "http");
+  assert.equal(publicPayload.ssh.hosts[0].proxy.password, "");
+  assert.equal(publicPayload.ssh.hosts[0].passwordConfigured, true);
+  assert.equal(publicPayload.ssh.hosts[0].privateKeyConfigured, true);
+  assert.equal(publicPayload.ssh.hosts[0].proxy.passwordConfigured, true);
+  assert.equal(Object.hasOwn(publicPayload, "sshSecretUpdates"), false);
+
+  const privatePayload = settingsSync.buildGatewaySettingsSyncPayload(source, {
+    includeProviderApiKeyUpdates: true,
+  });
+  assert.equal(privatePayload.ssh.hosts[0].password, "");
+  assert.equal(privatePayload.ssh.hosts[0].privateKey, "");
+  assert.equal(privatePayload.ssh.hosts[0].proxy.type, "http");
+  assert.equal(privatePayload.ssh.hosts[0].proxy.password, "");
+  assert.deepEqual(privatePayload.sshSecretUpdates, {
+    "ssh-prod": {
+      password: "ssh-password",
+      privateKey: "-----BEGIN OPENSSH PRIVATE KEY-----",
+      proxyPassword: "proxy-password",
+    },
+  });
+});
+
+test("ssh settings sync merges one-shot secret updates into existing hosts", () => {
+  installWindow();
+  const current = settings.normalizeSettings({
+    ssh: {
+      hosts: [
+        {
+          id: "ssh-prod",
+          name: "Prod",
+          host: "prod.example.com",
+          username: "deploy",
+          authType: "password",
+          password: "old-password",
+          privateKey: "old-key",
+          proxy: {
+            type: "socks5",
+            url: "socks5://127.0.0.1",
+            port: 1080,
+            username: "proxy-user",
+            password: "old-proxy-password",
+          },
+        },
+      ],
+    },
+  });
+
+  const synced = settingsSync.applyGatewaySettingsSyncPayload(current, {
+    ssh: {
+      hosts: [
+        {
+          id: "ssh-prod",
+          name: "Prod",
+          host: "prod.example.com",
+          username: "deploy",
+          authType: "privateKey",
+          password: "",
+          passwordConfigured: true,
+          privateKey: "",
+          privateKeyPath: "~/.ssh/prod",
+          privateKeyConfigured: true,
+          proxy: {
+            type: "http",
+            url: "http://127.0.0.1",
+            port: 1080,
+            username: "proxy-user",
+            password: "",
+            passwordConfigured: true,
+          },
+        },
+      ],
+    },
+    sshSecretUpdates: {
+      "ssh-prod": {
+        password: "new-password",
+        privateKey: "new-key",
+        proxyPassword: "new-proxy-password",
+      },
+    },
+  });
+
+  assert.equal(synced.ssh.hosts[0].authType, "privateKey");
+  assert.equal(synced.ssh.hosts[0].password, "new-password");
+  assert.equal(synced.ssh.hosts[0].privateKey, "new-key");
+  assert.equal(synced.ssh.hosts[0].proxy.type, "http");
+  assert.equal(synced.ssh.hosts[0].proxy.password, "new-proxy-password");
+  assert.equal(synced.ssh.hosts[0].passwordConfigured, true);
+  assert.equal(synced.ssh.hosts[0].privateKeyConfigured, true);
+  assert.equal(synced.ssh.hosts[0].proxy.passwordConfigured, true);
+});
+
 test("workspace project selection stays out of synced system workdir", () => {
   installWindow();
   const resolvedSystem = settings.resolveWorkspaceProjects(

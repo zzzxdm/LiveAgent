@@ -22,7 +22,7 @@ use crate::commands::chat_history::{self, ChatHistorySummary};
 use crate::commands::settings::{
     load_gateway_settings_sync_snapshot, load_remote_settings, normalize_remote_settings_payload,
     open_db, redact_gateway_settings_sync_payload, RemoteSettingsPayload,
-    PROVIDER_API_KEY_UPDATES_FIELD,
+    PROVIDER_API_KEY_UPDATES_FIELD, SSH_SECRET_UPDATES_FIELD,
 };
 use crate::runtime::terminal::{
     terminal_shell_options, TerminalEventPayload, TerminalSessionRecord, TerminalSessionRegistry,
@@ -3694,6 +3694,7 @@ fn build_local_settings_update_event_payload(payload: Value) -> Result<Value, St
         _ => return Err("gateway settings sync payload must be an object".to_string()),
     };
     let provider_api_key_updates = event.remove(PROVIDER_API_KEY_UPDATES_FIELD);
+    let ssh_secret_updates = event.remove(SSH_SECRET_UPDATES_FIELD);
     event.remove("remote");
     let mut public_event = match redact_gateway_settings_sync_payload(Value::Object(event))? {
         Value::Object(map) => map,
@@ -3701,6 +3702,9 @@ fn build_local_settings_update_event_payload(payload: Value) -> Result<Value, St
     };
     if let Some(updates) = provider_api_key_updates {
         public_event.insert(PROVIDER_API_KEY_UPDATES_FIELD.to_string(), updates);
+    }
+    if let Some(updates) = ssh_secret_updates {
+        public_event.insert(SSH_SECRET_UPDATES_FIELD.to_string(), updates);
     }
     Ok(Value::Object(public_event))
 }
