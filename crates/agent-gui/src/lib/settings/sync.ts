@@ -3,6 +3,7 @@ import {
   normalizeChatRuntimeControls,
   normalizeProjectToolsFileTreeSettings,
   normalizeProjectToolsGitReviewSettings,
+  normalizeProjectToolsSshTunnelSettings,
   normalizeProjectToolsTunnelSettings,
   normalizeSettings,
   workspaceProjectPathKey,
@@ -87,6 +88,7 @@ export function redactSettingsForWebStorage(settings: AppSettings): AppSettings 
 
 function redactSshSettingsForWebStorage(ssh: AppSettings["ssh"]): AppSettings["ssh"] {
   return {
+    projectHostAssociations: ssh.projectHostAssociations,
     hosts: ssh.hosts.map((host) => ({
       ...host,
       password: "",
@@ -354,9 +356,19 @@ function mergeSyncedSshSettings(
   incoming: unknown,
   secretUpdates: GatewaySshSecretUpdates,
 ): AppSettings["ssh"] {
+  const source = asObject(incoming);
   const normalized = normalizeSettings({ ssh: incoming as AppSettings["ssh"] }).ssh;
   const currentById = new Map(current.hosts.map((host) => [host.id, host]));
+  const projectHostAssociations = Object.hasOwn(source, "projectHostAssociations")
+    ? normalized.projectHostAssociations
+    : normalizeSettings({
+        ssh: {
+          hosts: normalized.hosts,
+          projectHostAssociations: current.projectHostAssociations,
+        },
+      }).ssh.projectHostAssociations;
   return {
+    projectHostAssociations,
     hosts: normalized.hosts.map((host) => {
       const currentHost = currentById.get(host.id);
       const update = secretUpdates[host.id];
@@ -454,6 +466,21 @@ function mergeSyncedProjectToolsTunnelSettings(
 ): AppSettings["customSettings"]["projectToolsTunnel"] {
   const currentState = normalizeProjectToolsTunnelSettings(current);
   const incomingState = normalizeProjectToolsTunnelSettings(incoming);
+  const openFromIncoming = incomingState.openVersion >= currentState.openVersion;
+  return {
+    openProjectPathKeys: openFromIncoming
+      ? incomingState.openProjectPathKeys
+      : currentState.openProjectPathKeys,
+    openVersion: Math.max(currentState.openVersion, incomingState.openVersion),
+  };
+}
+
+function mergeSyncedProjectToolsSshTunnelSettings(
+  current: AppSettings["customSettings"]["projectToolsSshTunnel"],
+  incoming: unknown,
+): AppSettings["customSettings"]["projectToolsSshTunnel"] {
+  const currentState = normalizeProjectToolsSshTunnelSettings(current);
+  const incomingState = normalizeProjectToolsSshTunnelSettings(incoming);
   const openFromIncoming = incomingState.openVersion >= currentState.openVersion;
   return {
     openProjectPathKeys: openFromIncoming
@@ -561,6 +588,12 @@ export function applyGatewaySettingsSyncPayload(
             incomingCustomSettings.projectToolsTunnel,
           )
         : current.customSettings.projectToolsTunnel,
+      projectToolsSshTunnel: Object.hasOwn(incomingCustomSettings, "projectToolsSshTunnel")
+        ? mergeSyncedProjectToolsSshTunnelSettings(
+            current.customSettings.projectToolsSshTunnel,
+            incomingCustomSettings.projectToolsSshTunnel,
+          )
+        : current.customSettings.projectToolsSshTunnel,
       chatSidebar: current.customSettings.chatSidebar,
       projectToolsPanel: current.customSettings.projectToolsPanel,
     },

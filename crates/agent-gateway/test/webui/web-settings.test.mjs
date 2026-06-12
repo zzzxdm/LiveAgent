@@ -202,6 +202,10 @@ test("loadWebSettings forces current gateway URL/token over stale persisted remo
     openProjectPathKeys: ["/stale/project"],
     openVersion: 1,
   };
+  stale.customSettings.projectToolsSshTunnel = {
+    openProjectPathKeys: ["/stale/project"],
+    openVersion: 1,
+  };
   store.set("liveagent.gateway.webui.settings.v1", JSON.stringify(stale));
 
   const loaded = webSettings.loadWebSettings(" new-token ");
@@ -212,6 +216,7 @@ test("loadWebSettings forces current gateway URL/token over stale persisted remo
   assert.deepEqual(loaded.customSettings.projectToolsFileTree.openProjectPathKeys, []);
   assert.deepEqual(loaded.customSettings.projectToolsGitReview.openProjectPathKeys, []);
   assert.deepEqual(loaded.customSettings.projectToolsTunnel.openProjectPathKeys, []);
+  assert.deepEqual(loaded.customSettings.projectToolsSshTunnel.openProjectPathKeys, []);
 });
 
 test("gateway settings sync keeps remote connection local and syncs web terminal setting", () => {
@@ -284,10 +289,20 @@ test("ssh settings sync redacts stored secrets and carries one-shot secret updat
           },
         },
       ],
+      projectHostAssociations: {
+        "/project-a": ["ssh-prod", "missing-host", "ssh-prod"],
+        "   ": ["ssh-prod"],
+      },
     },
+  });
+  assert.deepEqual(source.ssh.projectHostAssociations, {
+    "/project-a": ["ssh-prod"],
   });
 
   const redacted = settingsSync.redactSettingsForWebStorage(source);
+  assert.deepEqual(redacted.ssh.projectHostAssociations, {
+    "/project-a": ["ssh-prod"],
+  });
   assert.equal(redacted.ssh.hosts[0].password, "");
   assert.equal(redacted.ssh.hosts[0].privateKey, "");
   assert.equal(redacted.ssh.hosts[0].proxy.type, "http");
@@ -297,6 +312,9 @@ test("ssh settings sync redacts stored secrets and carries one-shot secret updat
   assert.equal(redacted.ssh.hosts[0].proxy.passwordConfigured, true);
 
   const publicPayload = settingsSync.buildGatewaySettingsSyncPayload(source);
+  assert.deepEqual(publicPayload.ssh.projectHostAssociations, {
+    "/project-a": ["ssh-prod"],
+  });
   assert.equal(publicPayload.ssh.hosts[0].password, "");
   assert.equal(publicPayload.ssh.hosts[0].privateKey, "");
   assert.equal(publicPayload.ssh.hosts[0].proxy.type, "http");
@@ -308,6 +326,9 @@ test("ssh settings sync redacts stored secrets and carries one-shot secret updat
 
   const privatePayload = settingsSync.buildGatewaySettingsSyncPayload(source, {
     includeProviderApiKeyUpdates: true,
+  });
+  assert.deepEqual(privatePayload.ssh.projectHostAssociations, {
+    "/project-a": ["ssh-prod"],
   });
   assert.equal(privatePayload.ssh.hosts[0].password, "");
   assert.equal(privatePayload.ssh.hosts[0].privateKey, "");
@@ -371,6 +392,9 @@ test("ssh settings sync merges one-shot secret updates into existing hosts", () 
           },
         },
       ],
+      projectHostAssociations: {
+        "/project-a": ["ssh-prod"],
+      },
     },
     sshSecretUpdates: {
       "ssh-prod": {
@@ -389,6 +413,62 @@ test("ssh settings sync merges one-shot secret updates into existing hosts", () 
   assert.equal(synced.ssh.hosts[0].passwordConfigured, true);
   assert.equal(synced.ssh.hosts[0].privateKeyConfigured, true);
   assert.equal(synced.ssh.hosts[0].proxy.passwordConfigured, true);
+  assert.deepEqual(synced.ssh.projectHostAssociations, {
+    "/project-a": ["ssh-prod"],
+  });
+});
+
+test("ssh settings sync preserves project host associations when older payload omits them", () => {
+  installWindow();
+  const current = settings.normalizeSettings({
+    ssh: {
+      hosts: [
+        {
+          id: "ssh-prod",
+          name: "Prod",
+          host: "prod.example.com",
+          username: "deploy",
+          authType: "password",
+        },
+      ],
+      projectHostAssociations: {
+        "/project-a": ["ssh-prod"],
+      },
+    },
+  });
+
+  const preserved = settingsSync.applyGatewaySettingsSyncPayload(current, {
+    ssh: {
+      hosts: [
+        {
+          id: "ssh-prod",
+          name: "Prod",
+          host: "prod.example.com",
+          username: "deploy",
+          authType: "password",
+        },
+      ],
+    },
+  });
+  assert.deepEqual(preserved.ssh.projectHostAssociations, {
+    "/project-a": ["ssh-prod"],
+  });
+
+  const cleared = settingsSync.applyGatewaySettingsSyncPayload(current, {
+    ssh: {
+      hosts: [
+        {
+          id: "ssh-prod",
+          name: "Prod",
+          host: "prod.example.com",
+          username: "deploy",
+          authType: "password",
+        },
+      ],
+      projectHostAssociations: {},
+    },
+  });
+  assert.deepEqual(cleared.ssh.projectHostAssociations, {});
 });
 
 test("workspace project selection stays out of synced system workdir", () => {
@@ -498,6 +578,10 @@ test("gateway settings sync keeps newer project tool tab open state", () => {
         openProjectPathKeys: ["/web/project"],
         openVersion: 2,
       },
+      projectToolsSshTunnel: {
+        openProjectPathKeys: ["/web/project"],
+        openVersion: 2,
+      },
     },
   });
 
@@ -518,6 +602,10 @@ test("gateway settings sync keeps newer project tool tab open state", () => {
         openProjectPathKeys: [],
         openVersion: 1,
       },
+      projectToolsSshTunnel: {
+        openProjectPathKeys: [],
+        openVersion: 1,
+      },
     },
   });
   assert.deepEqual(staleSynced.customSettings.projectToolsGitReview.openProjectPathKeys, [
@@ -528,6 +616,10 @@ test("gateway settings sync keeps newer project tool tab open state", () => {
     "/web/project",
   ]);
   assert.equal(staleSynced.customSettings.projectToolsTunnel.openVersion, 2);
+  assert.deepEqual(staleSynced.customSettings.projectToolsSshTunnel.openProjectPathKeys, [
+    "/web/project",
+  ]);
+  assert.equal(staleSynced.customSettings.projectToolsSshTunnel.openVersion, 2);
   assert.equal(staleSynced.customSettings.projectToolsPanel.width, 612);
   assert.equal(staleSynced.customSettings.projectToolsPanel.activeTab, "gitReview");
   assert.deepEqual(staleSynced.customSettings.projectToolsPanel.activeTabs, {
@@ -557,6 +649,10 @@ test("gateway settings sync keeps newer project tool tab open state", () => {
         openProjectPathKeys: ["/desktop/project"],
         openVersion: 3,
       },
+      projectToolsSshTunnel: {
+        openProjectPathKeys: ["/desktop/project"],
+        openVersion: 3,
+      },
     },
   });
   assert.deepEqual(newerSynced.customSettings.projectToolsGitReview.openProjectPathKeys, [
@@ -567,6 +663,10 @@ test("gateway settings sync keeps newer project tool tab open state", () => {
     "/desktop/project",
   ]);
   assert.equal(newerSynced.customSettings.projectToolsTunnel.openVersion, 3);
+  assert.deepEqual(newerSynced.customSettings.projectToolsSshTunnel.openProjectPathKeys, [
+    "/desktop/project",
+  ]);
+  assert.equal(newerSynced.customSettings.projectToolsSshTunnel.openVersion, 3);
   assert.equal(newerSynced.customSettings.projectToolsPanel.width, 612);
   assert.equal(newerSynced.customSettings.projectToolsPanel.activeTab, "gitReview");
   assert.deepEqual(newerSynced.customSettings.projectToolsPanel.activeTabs, {
@@ -583,6 +683,10 @@ test("gateway settings sync keeps newer project tool tab open state", () => {
     openVersion: 3,
   });
   assert.deepEqual(payload.customSettings.projectToolsTunnel, {
+    openProjectPathKeys: ["/desktop/project"],
+    openVersion: 3,
+  });
+  assert.deepEqual(payload.customSettings.projectToolsSshTunnel, {
     openProjectPathKeys: ["/desktop/project"],
     openVersion: 3,
   });

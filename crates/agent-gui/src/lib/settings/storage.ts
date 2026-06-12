@@ -8,6 +8,7 @@ import {
   normalizeChatRuntimeControls,
   normalizeProjectToolsFileTreeSettings,
   normalizeProjectToolsGitReviewSettings,
+  normalizeProjectToolsSshTunnelSettings,
   normalizeProjectToolsTunnelSettings,
   normalizeProjectToolsPanelActiveTab,
   normalizeProjectToolsPanelActiveTabs,
@@ -63,6 +64,7 @@ function toPersistedLocalCustomSettings(
     projectToolsFileTree: normalizeProjectToolsFileTreeSettings({}),
     projectToolsGitReview: normalizeProjectToolsGitReviewSettings({}),
     projectToolsTunnel: normalizeProjectToolsTunnelSettings({}),
+    projectToolsSshTunnel: normalizeProjectToolsSshTunnelSettings({}),
   };
 }
 
@@ -117,6 +119,7 @@ function readLocalUiSettings(): {
       projectToolsFileTree: normalizeProjectToolsFileTreeSettings({}),
       projectToolsGitReview: normalizeProjectToolsGitReviewSettings({}),
       projectToolsTunnel: normalizeProjectToolsTunnelSettings({}),
+      projectToolsSshTunnel: normalizeProjectToolsSshTunnelSettings({}),
     });
   }
 

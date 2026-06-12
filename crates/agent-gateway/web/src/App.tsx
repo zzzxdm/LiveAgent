@@ -67,9 +67,11 @@ import {
   getProjectToolsFileTreeProjectState,
   getProjectToolsPanelActiveTab,
   getProjectToolsPanelTabOrder,
+  getSshProjectHostIds,
   isAgentDevMode,
   isProjectToolsFileTreeOpen,
   isProjectToolsGitReviewOpen,
+  isProjectToolsSshTunnelOpen,
   isProjectToolsTunnelOpen,
   normalizeChatRuntimeControlsForProvider,
   normalizeSettings,
@@ -81,9 +83,11 @@ import {
   updateProjectToolsFileTreeProjectState,
   updateProjectToolsFileTreeOpen,
   updateProjectToolsGitReviewOpen,
+  updateProjectToolsSshTunnelOpen,
   updateProjectToolsTunnelOpen,
   updateProjectToolsPanelActiveTab,
   updateProjectToolsPanelTabOrder,
+  updateSshProjectHostIds,
   type AppSettings,
   type ChatRuntimeControls,
   type CustomProvider,
@@ -5880,6 +5884,11 @@ export default function App() {
     settings.customSettings,
     terminalProjectPathKey,
   );
+  const projectToolsSshTunnelOpen = isProjectToolsSshTunnelOpen(
+    settings.customSettings,
+    terminalProjectPathKey,
+  );
+  const associatedSshHostIds = getSshProjectHostIds(settings.ssh, terminalProjectPathKey);
   const projectToolsDisabledMessage = !settingsSyncReady
     ? "Syncing desktop settings..."
     : !isAgentMode
@@ -7051,6 +7060,9 @@ export default function App() {
               terminalProjectPathKey,
             )}
             tunnelOpen={projectToolsTunnelOpen}
+            sshTunnelOpen={projectToolsSshTunnelOpen}
+            sshHosts={settings.ssh.hosts}
+            associatedSshHostIds={associatedSshHostIds}
             client={terminalClient}
             gitClient={gitClient}
             gitWriteEnabled={settings.remote.enableWebGit}
@@ -7096,6 +7108,14 @@ export default function App() {
             }
             onTunnelOpenChange={(open) =>
               setSettings((prev) => updateProjectToolsTunnelOpen(prev, terminalProjectPathKey, open))
+            }
+            onSshTunnelOpenChange={(open) =>
+              setSettings((prev) =>
+                updateProjectToolsSshTunnelOpen(prev, terminalProjectPathKey, open),
+              )
+            }
+            onSshProjectHostIdsChange={(hostIds) =>
+              setSettings((prev) => updateSshProjectHostIds(prev, terminalProjectPathKey, hostIds))
             }
             onSessionsChange={handleProjectTerminalSessionsChange}
             onInsertFileMention={(path, kind) => {

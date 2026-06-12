@@ -126,7 +126,12 @@ export type ChatSidebarSettings = {
   recentCollapsed: boolean;
 };
 
-export type ProjectToolsPanelTab = "terminal" | "fileTree" | "gitReview" | "tunnel";
+export type ProjectToolsPanelTab =
+  | "terminal"
+  | "fileTree"
+  | "gitReview"
+  | "tunnel"
+  | "sshTunnel";
 
 export type ProjectToolsPanelSettings = {
   width: number;
@@ -159,6 +164,11 @@ export type ProjectToolsTunnelSettings = {
   openVersion: number;
 };
 
+export type ProjectToolsSshTunnelSettings = {
+  openProjectPathKeys: string[];
+  openVersion: number;
+};
+
 export type ProjectToolsFileTreeStatePatch = Partial<ProjectToolsFileTreeProjectState> & {
   bumpRevision?: boolean;
   bumpStateVersion?: boolean;
@@ -171,6 +181,7 @@ export type CustomSettings = {
   projectToolsFileTree: ProjectToolsFileTreeSettings;
   projectToolsGitReview: ProjectToolsGitReviewSettings;
   projectToolsTunnel: ProjectToolsTunnelSettings;
+  projectToolsSshTunnel: ProjectToolsSshTunnelSettings;
 };
 
 export type SystemSettings = {
@@ -260,6 +271,7 @@ export type SshHostConfig = {
 
 export type SshSettings = {
   hosts: SshHostConfig[];
+  projectHostAssociations: Record<string, string[]>;
 };
 
 export type CustomProvider = {
@@ -1320,8 +1332,43 @@ export function normalizeSshSettings(input: unknown): SshSettings {
     seenIds.add(id);
     return { ...normalized, id };
   });
+  const hostIds = new Set(hosts.map((host) => host.id));
 
-  return { hosts };
+  return {
+    hosts,
+    projectHostAssociations: normalizeSshProjectHostAssociations(
+      obj.projectHostAssociations,
+      hostIds,
+    ),
+  };
+}
+
+function normalizeSshProjectHostAssociations(
+  input: unknown,
+  hostIds: ReadonlySet<string>,
+): Record<string, string[]> {
+  const rawAssociations = (
+    input && typeof input === "object" && !Array.isArray(input) ? input : {}
+  ) as Record<string, unknown>;
+  const associations: Record<string, string[]> = {};
+  for (const [pathKey, rawHostIds] of Object.entries(rawAssociations)) {
+    const normalizedPathKey = workspaceProjectPathKey(pathKey);
+    if (!normalizedPathKey || !Array.isArray(rawHostIds)) continue;
+    const ids: string[] = [];
+    const seen = new Set<string>();
+    for (const rawHostId of rawHostIds) {
+      if (typeof rawHostId !== "string") continue;
+      const hostId = rawHostId.trim();
+      if (!hostId || !hostIds.has(hostId) || seen.has(hostId)) continue;
+      seen.add(hostId);
+      ids.push(hostId);
+      if (ids.length >= 64) break;
+    }
+    if (ids.length === 0) continue;
+    associations[normalizedPathKey] = ids;
+    if (Object.keys(associations).length >= 100) break;
+  }
+  return associations;
 }
 
 export function normalizeSystemSettings(input: unknown): SystemSettings {
@@ -1673,6 +1720,23 @@ export function normalizeProjectToolsTunnelSettings(input: unknown): ProjectTool
   };
 }
 
+export function normalizeProjectToolsSshTunnelSettings(
+  input: unknown,
+): ProjectToolsSshTunnelSettings {
+  const obj = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
+  const openProjectPathKeys = Array.from(
+    new Set(
+      (Array.isArray(obj.openProjectPathKeys) ? obj.openProjectPathKeys : [])
+        .map((pathKey) => workspaceProjectPathKey(pathKey))
+        .filter(Boolean),
+    ),
+  ).sort();
+  return {
+    openProjectPathKeys,
+    openVersion: normalizeIntegerInRange(obj.openVersion, 0, Number.MAX_SAFE_INTEGER, 0),
+  };
+}
+
 export function normalizeProjectToolsPanelTabOrder(input: unknown): string[] {
   if (!Array.isArray(input)) return [];
   const order: string[] = [];
@@ -1690,7 +1754,11 @@ export function normalizeProjectToolsPanelTabOrder(input: unknown): string[] {
 
 function isProjectToolsPanelTab(input: unknown): input is ProjectToolsPanelTab {
   return (
-    input === "terminal" || input === "fileTree" || input === "gitReview" || input === "tunnel"
+    input === "terminal" ||
+    input === "fileTree" ||
+    input === "gitReview" ||
+    input === "tunnel" ||
+    input === "sshTunnel"
   );
 }
 
@@ -1762,6 +1830,11 @@ export function normalizeCustomSettings(
       ? obj.projectToolsTunnel
       : {}
   ) as unknown;
+  const projectToolsSshTunnel = (
+    obj.projectToolsSshTunnel && typeof obj.projectToolsSshTunnel === "object"
+      ? obj.projectToolsSshTunnel
+      : {}
+  ) as unknown;
   return {
     conversationTitleModel: normalizeSelectedModelForProviders(
       normalizeSelectedModel(obj.conversationTitleModel),
@@ -1785,6 +1858,7 @@ export function normalizeCustomSettings(
     projectToolsFileTree: normalizeProjectToolsFileTreeSettings(projectToolsFileTree),
     projectToolsGitReview: normalizeProjectToolsGitReviewSettings(projectToolsGitReview),
     projectToolsTunnel: normalizeProjectToolsTunnelSettings(projectToolsTunnel),
+    projectToolsSshTunnel: normalizeProjectToolsSshTunnelSettings(projectToolsSshTunnel),
   };
 }
 
@@ -1808,6 +1882,7 @@ export function getDefaultSettings(): AppSettings {
     agents: [],
     ssh: {
       hosts: [],
+      projectHostAssociations: {},
     },
     hooks: [],
     cron: [],
@@ -1909,6 +1984,76 @@ export function updateSsh(prev: AppSettings, patch: Partial<SshSettings>): AppSe
   });
 }
 
+function normalizeSshProjectHostIdList(
+  ssh: SshSettings,
+  hostIds: readonly string[],
+): string[] {
+  const availableHostIds = new Set(ssh.hosts.map((host) => host.id));
+  const seen = new Set<string>();
+  const ids: string[] = [];
+  for (const rawHostId of hostIds) {
+    const hostId = rawHostId.trim();
+    if (!hostId || !availableHostIds.has(hostId) || seen.has(hostId)) continue;
+    seen.add(hostId);
+    ids.push(hostId);
+    if (ids.length >= 64) break;
+  }
+  return ids;
+}
+
+export function getSshProjectHostIds(ssh: SshSettings, projectPathKey: string): string[] {
+  const normalizedPathKey = workspaceProjectPathKey(projectPathKey);
+  if (!normalizedPathKey) return [];
+  return normalizeSshProjectHostIdList(
+    ssh,
+    ssh.projectHostAssociations[normalizedPathKey] ?? [],
+  );
+}
+
+export function updateSshProjectHostIds(
+  prev: AppSettings,
+  projectPathKey: string,
+  hostIds: readonly string[],
+): AppSettings {
+  const normalizedPathKey = workspaceProjectPathKey(projectPathKey);
+  if (!normalizedPathKey) return prev;
+  const nextHostIds = normalizeSshProjectHostIdList(prev.ssh, hostIds);
+  const currentHostIds = getSshProjectHostIds(prev.ssh, normalizedPathKey);
+  if (
+    currentHostIds.length === nextHostIds.length &&
+    currentHostIds.every((hostId, index) => hostId === nextHostIds[index])
+  ) {
+    return prev;
+  }
+  const projectHostAssociations = { ...prev.ssh.projectHostAssociations };
+  if (nextHostIds.length > 0) {
+    projectHostAssociations[normalizedPathKey] = nextHostIds;
+  } else {
+    delete projectHostAssociations[normalizedPathKey];
+  }
+  return updateSsh(prev, { projectHostAssociations });
+}
+
+export function removeSshHostFromProjectAssociations(
+  prev: AppSettings,
+  hostId: string,
+): AppSettings {
+  const normalizedHostId = hostId.trim();
+  if (!normalizedHostId) return prev;
+  let changed = false;
+  const projectHostAssociations: Record<string, string[]> = {};
+  for (const [pathKey, hostIds] of Object.entries(prev.ssh.projectHostAssociations)) {
+    const nextHostIds = hostIds.filter((item) => item !== normalizedHostId);
+    if (nextHostIds.length !== hostIds.length) {
+      changed = true;
+    }
+    if (nextHostIds.length > 0) {
+      projectHostAssociations[pathKey] = nextHostIds;
+    }
+  }
+  return changed ? updateSsh(prev, { projectHostAssociations }) : prev;
+}
+
 export function updateHooks(prev: AppSettings, hooks: ConversationHook[]): AppSettings {
   return normalizeSettings({
     ...prev,
@@ -1975,6 +2120,10 @@ function hasProjectToolsTunnelSessionState(state: ProjectToolsTunnelSettings): b
   return state.openVersion > 0 || state.openProjectPathKeys.length > 0;
 }
 
+function hasProjectToolsSshTunnelSessionState(state: ProjectToolsSshTunnelSettings): boolean {
+  return state.openVersion > 0 || state.openProjectPathKeys.length > 0;
+}
+
 export function preserveProjectToolsSessionState(
   next: AppSettings,
   current: AppSettings,
@@ -1987,6 +2136,9 @@ export function preserveProjectToolsSessionState(
   );
   const currentTunnel = normalizeProjectToolsTunnelSettings(
     current.customSettings.projectToolsTunnel,
+  );
+  const currentSshTunnel = normalizeProjectToolsSshTunnelSettings(
+    current.customSettings.projectToolsSshTunnel,
   );
 
   return normalizeSettings({
@@ -2002,6 +2154,9 @@ export function preserveProjectToolsSessionState(
       projectToolsTunnel: hasProjectToolsTunnelSessionState(currentTunnel)
         ? currentTunnel
         : next.customSettings.projectToolsTunnel,
+      projectToolsSshTunnel: hasProjectToolsSshTunnelSessionState(currentSshTunnel)
+        ? currentSshTunnel
+        : next.customSettings.projectToolsSshTunnel,
     },
   });
 }
@@ -2133,6 +2288,19 @@ export function removeProjectToolsProjectState(
   );
   const removedTunnelOpenProjectPathKey =
     nextTunnelOpenProjectPathKeys.length !== tunnelOpenProjectPathKeys.length;
+  const sshTunnelOpenProjectPathKeys =
+    prev.customSettings.projectToolsSshTunnel.openProjectPathKeys
+      .map((pathKey) => workspaceProjectPathKey(pathKey))
+      .filter(Boolean);
+  const nextSshTunnelOpenProjectPathKeys = sshTunnelOpenProjectPathKeys.filter(
+    (pathKey) => pathKey !== normalizedPathKey,
+  );
+  const removedSshTunnelOpenProjectPathKey =
+    nextSshTunnelOpenProjectPathKeys.length !== sshTunnelOpenProjectPathKeys.length;
+  const hasSshProjectAssociation = Object.hasOwn(
+    prev.ssh.projectHostAssociations,
+    normalizedPathKey,
+  );
   const hasFileTreeProjectState = Object.prototype.hasOwnProperty.call(
     prev.customSettings.projectToolsFileTree.projects,
     normalizedPathKey,
@@ -2145,7 +2313,9 @@ export function removeProjectToolsProjectState(
     !removedOpenProjectPathKey &&
     !removedGitReviewOpenProjectPathKey &&
     !removedTunnelOpenProjectPathKey &&
-    !hasFileTreeProjectState
+    !removedSshTunnelOpenProjectPathKey &&
+    !hasFileTreeProjectState &&
+    !hasSshProjectAssociation
   ) {
     return prev;
   }
@@ -2170,39 +2340,63 @@ export function removeProjectToolsProjectState(
     delete projects[normalizedPathKey];
   }
 
-  return updateCustomSettings(prev, {
-    projectToolsPanel: {
-      ...prev.customSettings.projectToolsPanel,
-      activeTabs,
-      tabOrders,
+  const projectHostAssociations = hasSshProjectAssociation
+    ? { ...prev.ssh.projectHostAssociations }
+    : prev.ssh.projectHostAssociations;
+  if (hasSshProjectAssociation) {
+    delete projectHostAssociations[normalizedPathKey];
+  }
+
+  return normalizeSettings({
+    ...prev,
+    ssh: {
+      ...prev.ssh,
+      projectHostAssociations,
     },
-    projectToolsFileTree: {
-      ...prev.customSettings.projectToolsFileTree,
-      openProjectPathKeys: removedOpenProjectPathKey
-        ? nextOpenProjectPathKeys.sort()
-        : prev.customSettings.projectToolsFileTree.openProjectPathKeys,
-      openVersion: removedFileTreeState
-        ? prev.customSettings.projectToolsFileTree.openVersion + 1
-        : prev.customSettings.projectToolsFileTree.openVersion,
-      projects,
-    },
-    projectToolsGitReview: {
-      ...prev.customSettings.projectToolsGitReview,
-      openProjectPathKeys: removedGitReviewOpenProjectPathKey
-        ? nextGitReviewOpenProjectPathKeys.sort()
-        : prev.customSettings.projectToolsGitReview.openProjectPathKeys,
-      openVersion: removedGitReviewOpenProjectPathKey
-        ? prev.customSettings.projectToolsGitReview.openVersion + 1
-        : prev.customSettings.projectToolsGitReview.openVersion,
-    },
-    projectToolsTunnel: {
-      ...prev.customSettings.projectToolsTunnel,
-      openProjectPathKeys: removedTunnelOpenProjectPathKey
-        ? nextTunnelOpenProjectPathKeys.sort()
-        : prev.customSettings.projectToolsTunnel.openProjectPathKeys,
-      openVersion: removedTunnelOpenProjectPathKey
-        ? prev.customSettings.projectToolsTunnel.openVersion + 1
-        : prev.customSettings.projectToolsTunnel.openVersion,
+    customSettings: {
+      ...prev.customSettings,
+      projectToolsPanel: {
+        ...prev.customSettings.projectToolsPanel,
+        activeTabs,
+        tabOrders,
+      },
+      projectToolsFileTree: {
+        ...prev.customSettings.projectToolsFileTree,
+        openProjectPathKeys: removedOpenProjectPathKey
+          ? nextOpenProjectPathKeys.sort()
+          : prev.customSettings.projectToolsFileTree.openProjectPathKeys,
+        openVersion: removedFileTreeState
+          ? prev.customSettings.projectToolsFileTree.openVersion + 1
+          : prev.customSettings.projectToolsFileTree.openVersion,
+        projects,
+      },
+      projectToolsGitReview: {
+        ...prev.customSettings.projectToolsGitReview,
+        openProjectPathKeys: removedGitReviewOpenProjectPathKey
+          ? nextGitReviewOpenProjectPathKeys.sort()
+          : prev.customSettings.projectToolsGitReview.openProjectPathKeys,
+        openVersion: removedGitReviewOpenProjectPathKey
+          ? prev.customSettings.projectToolsGitReview.openVersion + 1
+          : prev.customSettings.projectToolsGitReview.openVersion,
+      },
+      projectToolsTunnel: {
+        ...prev.customSettings.projectToolsTunnel,
+        openProjectPathKeys: removedTunnelOpenProjectPathKey
+          ? nextTunnelOpenProjectPathKeys.sort()
+          : prev.customSettings.projectToolsTunnel.openProjectPathKeys,
+        openVersion: removedTunnelOpenProjectPathKey
+          ? prev.customSettings.projectToolsTunnel.openVersion + 1
+          : prev.customSettings.projectToolsTunnel.openVersion,
+      },
+      projectToolsSshTunnel: {
+        ...prev.customSettings.projectToolsSshTunnel,
+        openProjectPathKeys: removedSshTunnelOpenProjectPathKey
+          ? nextSshTunnelOpenProjectPathKeys.sort()
+          : prev.customSettings.projectToolsSshTunnel.openProjectPathKeys,
+        openVersion: removedSshTunnelOpenProjectPathKey
+          ? prev.customSettings.projectToolsSshTunnel.openVersion + 1
+          : prev.customSettings.projectToolsSshTunnel.openVersion,
+      },
     },
   });
 }
@@ -2329,6 +2523,44 @@ export function updateProjectToolsTunnelOpen(
       ...prev.customSettings.projectToolsTunnel,
       openProjectPathKeys: Array.from(openProjectPathKeys).sort(),
       openVersion: prev.customSettings.projectToolsTunnel.openVersion + 1,
+    },
+  });
+}
+
+export function isProjectToolsSshTunnelOpen(
+  customSettings: CustomSettings,
+  projectPathKey: string,
+): boolean {
+  const normalizedPathKey = workspaceProjectPathKey(projectPathKey);
+  return (
+    normalizedPathKey !== "" &&
+    customSettings.projectToolsSshTunnel.openProjectPathKeys.includes(normalizedPathKey)
+  );
+}
+
+export function updateProjectToolsSshTunnelOpen(
+  prev: AppSettings,
+  projectPathKey: string,
+  open: boolean,
+): AppSettings {
+  const normalizedPathKey = workspaceProjectPathKey(projectPathKey);
+  if (!normalizedPathKey) return prev;
+  const openProjectPathKeys = new Set(
+    prev.customSettings.projectToolsSshTunnel.openProjectPathKeys
+      .map((pathKey) => workspaceProjectPathKey(pathKey))
+      .filter(Boolean),
+  );
+  if (openProjectPathKeys.has(normalizedPathKey) === open) return prev;
+  if (open) {
+    openProjectPathKeys.add(normalizedPathKey);
+  } else {
+    openProjectPathKeys.delete(normalizedPathKey);
+  }
+  return updateCustomSettings(prev, {
+    projectToolsSshTunnel: {
+      ...prev.customSettings.projectToolsSshTunnel,
+      openProjectPathKeys: Array.from(openProjectPathKeys).sort(),
+      openVersion: prev.customSettings.projectToolsSshTunnel.openVersion + 1,
     },
   });
 }

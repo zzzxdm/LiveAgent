@@ -25,6 +25,7 @@ import {
   type SshAuthType,
   type SshHostConfig,
   type SshProxyType,
+  removeSshHostFromProjectAssociations,
   updateSsh,
 } from "../../lib/settings";
 import { useModalMotion } from "../../lib/shared/modalMotion";
@@ -895,9 +896,12 @@ export function SshSection(props: SettingsSectionProps) {
 
   function handleDelete(id: string) {
     setSettings((prev) =>
-      updateSsh(prev, {
-        hosts: prev.ssh.hosts.filter((host) => host.id !== id),
-      }),
+      removeSshHostFromProjectAssociations(
+        updateSsh(prev, {
+          hosts: prev.ssh.hosts.filter((host) => host.id !== id),
+        }),
+        id,
+      ),
     );
   }
 

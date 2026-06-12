@@ -115,10 +115,12 @@ import {
   getProjectToolsFileTreeProjectState,
   getProjectToolsPanelActiveTab,
   getProjectToolsPanelTabOrder,
+  getSshProjectHostIds,
   isAgentDevMode,
   isAgentExecutionMode,
   isProjectToolsFileTreeOpen,
   isProjectToolsGitReviewOpen,
+  isProjectToolsSshTunnelOpen,
   isProjectToolsTunnelOpen,
   normalizeChatRuntimeControlsForProvider,
   type SelectedModel,
@@ -132,9 +134,11 @@ import {
   updateProjectToolsFileTreeProjectState,
   updateProjectToolsFileTreeOpen,
   updateProjectToolsGitReviewOpen,
+  updateProjectToolsSshTunnelOpen,
   updateProjectToolsTunnelOpen,
   updateProjectToolsPanelActiveTab,
   updateProjectToolsPanelTabOrder,
+  updateSshProjectHostIds,
   updateChatRuntimeControlsForProvider,
   updateMcp,
   updateMemorySettings,
@@ -1453,6 +1457,11 @@ export function ChatPage(props: ChatPageProps) {
     settings.customSettings,
     terminalProjectPathKey,
   );
+  const projectToolsSshTunnelOpen = isProjectToolsSshTunnelOpen(
+    settings.customSettings,
+    terminalProjectPathKey,
+  );
+  const associatedSshHostIds = getSshProjectHostIds(settings.ssh, terminalProjectPathKey);
   const terminalDisabledMessage = !isAgentMode
     ? "Project tools require Agent project mode."
     : !terminalProjectPath
@@ -4619,6 +4628,9 @@ export function ChatPage(props: ChatPageProps) {
         )}
         gitReviewOpen={isProjectToolsGitReviewOpen(settings.customSettings, terminalProjectPathKey)}
         tunnelOpen={projectToolsTunnelOpen}
+        sshTunnelOpen={projectToolsSshTunnelOpen}
+        sshHosts={settings.ssh.hosts}
+        associatedSshHostIds={associatedSshHostIds}
         client={tauriTerminalClient}
         gitClient={tauriGitClient}
         gitWriteEnabled
@@ -4659,6 +4671,14 @@ export function ChatPage(props: ChatPageProps) {
         }
         onTunnelOpenChange={(open) =>
           setSettings((prev) => updateProjectToolsTunnelOpen(prev, terminalProjectPathKey, open))
+        }
+        onSshTunnelOpenChange={(open) =>
+          setSettings((prev) =>
+            updateProjectToolsSshTunnelOpen(prev, terminalProjectPathKey, open),
+          )
+        }
+        onSshProjectHostIdsChange={(hostIds) =>
+          setSettings((prev) => updateSshProjectHostIds(prev, terminalProjectPathKey, hostIds))
         }
         onSessionsChange={setProjectTerminalSessions}
         onInsertFileMention={(path, kind) => {
