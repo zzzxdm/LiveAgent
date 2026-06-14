@@ -400,6 +400,9 @@ const LIVE_STREAM_HISTORY_REFRESH_SUPPRESS_MS = 30_000;
 const PAGE_RESTORE_HISTORY_REFRESH_THROTTLE_MS = 900;
 const CHAT_RUNTIME_PREPARE_TIMEOUT_MS = 2_500;
 const CHAT_RUNTIME_FOREGROUND_PREPARE_TIMEOUT_MS = 1_500;
+const CHAT_RUNTIME_KEEP_WARM_INTERVAL_MS = 10_000;
+const CHAT_RUNTIME_STARTING_STATUS_DELAY_MS = 1_200;
+const CHAT_RUNTIME_STARTING_STATUS = "Starting desktop runtime...";
 const DEFAULT_BROWSER_TITLE = "LiveAgent Gateway";
 const NEW_CONVERSATION_BROWSER_TITLE = "LiveAgent";
 const SHARED_HISTORY_BROWSER_TITLE = "分享会话";
@@ -4253,6 +4256,32 @@ export default function App() {
     };
   }, [api, historyShareToken, prepareChatRuntime, status?.online]);
 
+  useEffect(() => {
+    if (!api || historyShareToken || status?.online !== true) {
+      return;
+    }
+
+    const keepWarm = () => {
+      if (
+        typeof document !== "undefined" &&
+        document.visibilityState === "hidden"
+      ) {
+        return;
+      }
+      void prepareChatRuntime(
+        "keep-warm",
+        api,
+        CHAT_RUNTIME_FOREGROUND_PREPARE_TIMEOUT_MS,
+      ).catch(() => undefined);
+    };
+
+    keepWarm();
+    const intervalId = window.setInterval(keepWarm, CHAT_RUNTIME_KEEP_WARM_INTERVAL_MS);
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [api, historyShareToken, prepareChatRuntime, status?.online]);
+
   async function sendChat(message: string, options?: SendChatOptions) {
     if (!api || chatBusyRef.current) {
       return;
@@ -4329,7 +4358,7 @@ export default function App() {
     updateConversationRuntimeEntry(activeConversationId, (current) => ({
       ...current,
       error: null,
-      toolStatus: "Starting desktop runtime...",
+      toolStatus: null,
       toolStatusIsCompaction: false,
       isSending: true,
       workdir: effectiveWorkdir || undefined,
@@ -4365,12 +4394,31 @@ export default function App() {
 
     let terminalEventSeen = false;
     let runStarted = false;
+    let runtimeStartingStatusTimer: number | null = null;
+    const clearRuntimeStartingStatusTimer = () => {
+      if (runtimeStartingStatusTimer === null) {
+        return;
+      }
+      window.clearTimeout(runtimeStartingStatusTimer);
+      runtimeStartingStatusTimer = null;
+    };
     const markRunStarted = () => {
       if (runStarted) {
         return;
       }
       runStarted = true;
+      clearRuntimeStartingStatusTimer();
       setConversationRunningState(activeConversationId, true);
+      updateConversationRuntimeEntry(activeConversationId, (current) => {
+        if (current.toolStatus !== CHAT_RUNTIME_STARTING_STATUS) {
+          return current;
+        }
+        return {
+          ...current,
+          toolStatus: null,
+          toolStatusIsCompaction: false,
+        };
+      });
     };
     const runtimeControls = normalizeChatRuntimeControlsForProvider(
       options?.runtimeControls ?? settings.chatRuntimeControls,
@@ -4381,10 +4429,28 @@ export default function App() {
     );
     try {
       chatStartInFlightRef.current = true;
-      const preparedStatus = await prepareChatRuntime("send", api, CHAT_RUNTIME_PREPARE_TIMEOUT_MS);
-      if (preparedStatus.chat_runtime_ready !== true) {
-        throw new Error("Desktop chat runtime is not ready. Please retry.");
-      }
+      runtimeStartingStatusTimer = window.setTimeout(() => {
+        runtimeStartingStatusTimer = null;
+        if (runStarted || terminalEventSeen || controller.signal.aborted) {
+          return;
+        }
+        updateConversationRuntimeEntry(activeConversationId, (current) => {
+          if (!current.isSending || current.toolStatus) {
+            return current;
+          }
+          return {
+            ...current,
+            toolStatus: CHAT_RUNTIME_STARTING_STATUS,
+            toolStatusIsCompaction: false,
+          };
+        });
+      }, CHAT_RUNTIME_STARTING_STATUS_DELAY_MS);
+      // chat.start is itself the reliable wake-up signal for a suspended desktop
+      // WebView. Keep the status refresh in the background so a stale runtime
+      // heartbeat cannot block the request that would wake it.
+      void prepareChatRuntime("send", api, CHAT_RUNTIME_PREPARE_TIMEOUT_MS).catch(
+        () => undefined,
+      );
       for await (const event of api.chat(
         message,
         isLocalDraftConversationId(activeConversationId) ? undefined : activeConversationId,
@@ -4447,6 +4513,7 @@ export default function App() {
             }));
           } else if (isTerminalChatControlEvent(event)) {
             terminalEventSeen = true;
+            clearRuntimeStartingStatusTimer();
             clearConversationStreamingState(activeConversationId);
             if (event.type === "failed" || event.state === "failed") {
               updateConversationRuntimeEntry(activeConversationId, (current) => ({
@@ -4513,6 +4580,7 @@ export default function App() {
         }
       }
     } finally {
+      clearRuntimeStartingStatusTimer();
       chatStartInFlightRef.current = false;
       clearConversationStreamingState(activeConversationId);
       if (status?.online && !terminalEventSeen) {
