@@ -310,9 +310,11 @@ pub(crate) fn parse_remote_settings_payload(value: Value) -> Result<RemoteSettin
 
 #[derive(Debug, Clone)]
 pub(crate) struct RuntimeSshProxyConfig {
+    pub proxy_type: String,
     pub url: String,
     pub port: i64,
     pub username: String,
+    pub password: String,
     pub password_configured: bool,
 }
 
@@ -1540,6 +1542,12 @@ fn redact_ssh_settings(ssh: Value) -> Result<Value, String> {
 
 fn redact_ssh_host_secret(host: Value) -> Result<Value, String> {
     let mut payload = expect_object(host, "ssh settings host")?;
+    let auth_type = payload
+        .get("authType")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or("password");
+    let is_agent_auth = auth_type == "agent";
     let password_configured =
         match payload.remove("password") {
             Some(Value::String(value)) => !value.trim().is_empty(),
@@ -1565,15 +1573,15 @@ fn redact_ssh_host_secret(host: Value) -> Result<Value, String> {
     );
     payload.insert(
         "passwordConfigured".to_string(),
-        Value::Bool(password_configured),
+        Value::Bool(!is_agent_auth && password_configured),
     );
     payload.insert(
         "privateKeyConfigured".to_string(),
-        Value::Bool(private_key_configured),
+        Value::Bool(!is_agent_auth && private_key_configured),
     );
     payload.insert(
         "privateKeyPassphraseConfigured".to_string(),
-        Value::Bool(private_key_passphrase_configured),
+        Value::Bool(!is_agent_auth && private_key_passphrase_configured),
     );
     if let Some(proxy) = payload.remove("proxy") {
         if !matches!(proxy, Value::Null) {
@@ -1897,9 +1905,11 @@ pub(crate) fn load_runtime_ssh_host(host_id: &str) -> Result<Option<RuntimeSshHo
                 private_key_path,
                 private_key_passphrase,
                 proxy: RuntimeSshProxyConfig {
+                    proxy_type: extract_optional_string(&proxy, "type"),
                     url: extract_optional_string(&proxy, "url"),
                     port: proxy.get("port").and_then(Value::as_i64).unwrap_or(0),
                     username: extract_optional_string(&proxy, "username"),
+                    password: extract_optional_string(&proxy, "password"),
                     password_configured: proxy
                         .get("passwordConfigured")
                         .and_then(Value::as_bool)
@@ -2213,7 +2223,7 @@ fn validate_ssh_auth_type(value: Option<&Value>, label: &str) -> Result<String, 
         .map(str::trim)
         .unwrap_or("password");
     match auth_type {
-        "password" | "privateKey" => Ok(auth_type.to_string()),
+        "password" | "privateKey" | "agent" => Ok(auth_type.to_string()),
         other => Err(format!("{label}.authType 不支持：{other}")),
     }
 }
@@ -2326,15 +2336,37 @@ fn validate_and_normalize_ssh_host(
     let private_key = extract_optional_string(&host, "privateKey");
     let private_key_path = extract_optional_string(&host, "privateKeyPath");
     let private_key_passphrase = extract_optional_string(&host, "privateKeyPassphrase");
-    let password_configured = extract_bool_with_default(&host, "passwordConfigured", label, false)?
-        || !password.is_empty();
-    let private_key_configured =
-        extract_bool_with_default(&host, "privateKeyConfigured", label, false)?
+    let is_agent_auth = auth_type == "agent";
+    let password = if is_agent_auth {
+        String::new()
+    } else {
+        password
+    };
+    let private_key = if is_agent_auth {
+        String::new()
+    } else {
+        private_key
+    };
+    let private_key_path = if is_agent_auth {
+        String::new()
+    } else {
+        private_key_path
+    };
+    let private_key_passphrase = if is_agent_auth {
+        String::new()
+    } else {
+        private_key_passphrase
+    };
+    let password_configured = !is_agent_auth
+        && (extract_bool_with_default(&host, "passwordConfigured", label, false)?
+            || !password.is_empty());
+    let private_key_configured = !is_agent_auth
+        && (extract_bool_with_default(&host, "privateKeyConfigured", label, false)?
             || !private_key.is_empty()
-            || !private_key_path.is_empty();
-    let private_key_passphrase_configured =
-        extract_bool_with_default(&host, "privateKeyPassphraseConfigured", label, false)?
-            || !private_key_passphrase.is_empty();
+            || !private_key_path.is_empty());
+    let private_key_passphrase_configured = !is_agent_auth
+        && (extract_bool_with_default(&host, "privateKeyPassphraseConfigured", label, false)?
+            || !private_key_passphrase.is_empty());
     let proxy = validate_and_normalize_ssh_proxy(host.get("proxy"), label)?;
 
     let mut payload = Map::new();
@@ -3321,6 +3353,64 @@ mod tests {
             json!({
                 "/repo/project": ["prod", "staging"]
             })
+        );
+    }
+
+    #[test]
+    fn save_ssh_agent_host_clears_credential_secret_state() {
+        let mut conn = open_memory_db();
+        save_ssh(
+            &mut conn,
+            json!({
+                "hosts": [
+                    {
+                        "id": "agent-prod",
+                        "name": "Agent Production",
+                        "host": "prod.example.com",
+                        "username": "deploy",
+                        "authType": "agent",
+                        "password": "old-password",
+                        "passwordConfigured": true,
+                        "privateKey": "old-key",
+                        "privateKeyPath": "~/.ssh/id_rsa",
+                        "privateKeyConfigured": true,
+                        "privateKeyPassphrase": "old-passphrase",
+                        "privateKeyPassphraseConfigured": true,
+                        "proxy": {
+                            "type": "http",
+                            "url": "http://127.0.0.1",
+                            "port": 8080,
+                            "username": "proxy-user",
+                            "password": "proxy-password"
+                        }
+                    }
+                ]
+            }),
+        )
+        .expect("save agent ssh settings");
+
+        let loaded = load_ssh(&conn)
+            .expect("load ssh settings")
+            .expect("ssh settings should exist");
+        let host = &loaded["hosts"][0];
+        assert_eq!(host["authType"], "agent");
+        assert_eq!(host["password"], "");
+        assert_eq!(host["passwordConfigured"], false);
+        assert_eq!(host["privateKey"], "");
+        assert_eq!(host["privateKeyPath"], "");
+        assert_eq!(host["privateKeyConfigured"], false);
+        assert_eq!(host["privateKeyPassphrase"], "");
+        assert_eq!(host["privateKeyPassphraseConfigured"], false);
+        assert_eq!(host["proxy"]["passwordConfigured"], true);
+
+        let snapshot =
+            load_gateway_settings_sync_snapshot(&conn).expect("load gateway settings snapshot");
+        assert_eq!(snapshot["ssh"]["hosts"][0]["password"], Value::Null);
+        assert_eq!(snapshot["ssh"]["hosts"][0]["passwordConfigured"], false);
+        assert_eq!(snapshot["ssh"]["hosts"][0]["privateKeyConfigured"], false);
+        assert_eq!(
+            snapshot["ssh"]["hosts"][0]["privateKeyPassphraseConfigured"],
+            false
         );
     }
 

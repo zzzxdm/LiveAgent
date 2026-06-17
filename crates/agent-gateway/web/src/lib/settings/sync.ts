@@ -112,26 +112,32 @@ export function redactSettingsForWebStorage(settings: AppSettings): AppSettings 
 function redactSshSettingsForWebStorage(ssh: AppSettings["ssh"]): AppSettings["ssh"] {
   return {
     projectHostAssociations: ssh.projectHostAssociations,
-    hosts: ssh.hosts.map((host) => ({
-      ...host,
-      password: "",
-      passwordConfigured: host.password.trim().length > 0 || host.passwordConfigured === true,
-      privateKey: "",
-      privateKeyConfigured:
-        host.privateKey.trim().length > 0 ||
-        host.privateKeyPath.trim().length > 0 ||
-        host.privateKeyConfigured === true,
-      privateKeyPassphrase: "",
-      privateKeyPassphraseConfigured:
-        host.privateKeyPassphrase.trim().length > 0 ||
-        host.privateKeyPassphraseConfigured === true,
-      proxy: {
-        ...host.proxy,
+    hosts: ssh.hosts.map((host) => {
+      const isAgentAuth = host.authType === "agent";
+      return {
+        ...host,
         password: "",
         passwordConfigured:
-          host.proxy.password.trim().length > 0 || host.proxy.passwordConfigured === true,
-      },
-    })),
+          !isAgentAuth && (host.password.trim().length > 0 || host.passwordConfigured === true),
+        privateKey: "",
+        privateKeyConfigured:
+          !isAgentAuth &&
+          (host.privateKey.trim().length > 0 ||
+            host.privateKeyPath.trim().length > 0 ||
+            host.privateKeyConfigured === true),
+        privateKeyPassphrase: "",
+        privateKeyPassphraseConfigured:
+          !isAgentAuth &&
+          (host.privateKeyPassphrase.trim().length > 0 ||
+            host.privateKeyPassphraseConfigured === true),
+        proxy: {
+          ...host.proxy,
+          password: "",
+          passwordConfigured:
+            host.proxy.password.trim().length > 0 || host.proxy.passwordConfigured === true,
+        },
+      };
+    }),
   };
 }
 
@@ -153,6 +159,7 @@ function collectSshSecretUpdates(ssh: AppSettings["ssh"]): GatewaySshSecretUpdat
   for (const host of ssh.hosts) {
     const id = host.id.trim();
     if (!id) continue;
+    if (host.authType === "agent") continue;
     const password = host.password.trim();
     const privateKey = host.privateKey.trim();
     const privateKeyPassphrase = host.privateKeyPassphrase.trim();
@@ -418,33 +425,43 @@ function mergeSyncedSshSettings(
     hosts: normalized.hosts.map((host) => {
       const currentHost = currentById.get(host.id);
       const update = secretUpdates[host.id];
-      const password = (update?.password ?? host.password.trim()) || currentHost?.password || "";
+      const isAgentAuth = host.authType === "agent";
+      const password = isAgentAuth
+        ? ""
+        : (update?.password ?? host.password.trim()) || currentHost?.password || "";
       const privateKey =
-        (update?.privateKey ?? host.privateKey.trim()) || currentHost?.privateKey || "";
+        isAgentAuth
+          ? ""
+          : (update?.privateKey ?? host.privateKey.trim()) || currentHost?.privateKey || "";
       const privateKeyPassphrase =
-        (update?.privateKeyPassphrase ?? host.privateKeyPassphrase.trim()) ||
-        currentHost?.privateKeyPassphrase ||
-        "";
+        isAgentAuth
+          ? ""
+          : (update?.privateKeyPassphrase ?? host.privateKeyPassphrase.trim()) ||
+            currentHost?.privateKeyPassphrase ||
+            "";
       const proxyPassword =
         (update?.proxyPassword ?? host.proxy.password.trim()) || currentHost?.proxy.password || "";
       return {
         ...host,
         password,
         passwordConfigured:
-          password.length > 0 ||
-          host.passwordConfigured === true ||
-          currentHost?.passwordConfigured === true,
+          !isAgentAuth &&
+          (password.length > 0 ||
+            host.passwordConfigured === true ||
+            currentHost?.passwordConfigured === true),
         privateKey,
         privateKeyConfigured:
-          privateKey.length > 0 ||
-          host.privateKeyPath.trim().length > 0 ||
-          host.privateKeyConfigured === true ||
-          currentHost?.privateKeyConfigured === true,
+          !isAgentAuth &&
+          (privateKey.length > 0 ||
+            host.privateKeyPath.trim().length > 0 ||
+            host.privateKeyConfigured === true ||
+            currentHost?.privateKeyConfigured === true),
         privateKeyPassphrase,
         privateKeyPassphraseConfigured:
-          privateKeyPassphrase.length > 0 ||
-          host.privateKeyPassphraseConfigured === true ||
-          currentHost?.privateKeyPassphraseConfigured === true,
+          !isAgentAuth &&
+          (privateKeyPassphrase.length > 0 ||
+            host.privateKeyPassphraseConfigured === true ||
+            currentHost?.privateKeyPassphraseConfigured === true),
         proxy: {
           ...host.proxy,
           password: proxyPassword,

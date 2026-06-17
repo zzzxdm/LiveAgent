@@ -670,6 +670,56 @@ test("gateway settings sync redacts ssh secrets and preserves configured state",
   });
 });
 
+test("ssh agent hosts normalize without credential secrets or secret updates", () => {
+  const appSettings = settings.normalizeSettings({
+    ssh: {
+      hosts: [
+        {
+          id: "agent-prod",
+          name: "Agent Production",
+          host: "prod.example.com",
+          username: "deploy",
+          authType: "agent",
+          password: "old-password",
+          passwordConfigured: true,
+          privateKey: "old-key",
+          privateKeyPath: "~/.ssh/id_rsa",
+          privateKeyConfigured: true,
+          privateKeyPassphrase: "old-passphrase",
+          privateKeyPassphraseConfigured: true,
+          proxy: {
+            type: "http",
+            url: "http://127.0.0.1",
+            port: 8080,
+            username: "proxy-user",
+            password: "proxy-password",
+          },
+        },
+      ],
+    },
+  });
+
+  const host = appSettings.ssh.hosts[0];
+  assert.equal(host.authType, "agent");
+  assert.equal(host.password, "");
+  assert.equal(host.passwordConfigured, false);
+  assert.equal(host.privateKey, "");
+  assert.equal(host.privateKeyPath, "");
+  assert.equal(host.privateKeyConfigured, false);
+  assert.equal(host.privateKeyPassphrase, "");
+  assert.equal(host.privateKeyPassphraseConfigured, false);
+
+  const payload = sync.buildGatewaySettingsSyncPayload(appSettings, {
+    includeProviderApiKeyUpdates: true,
+  });
+  assert.equal(payload.sshSecretUpdates, undefined);
+  assert.equal(payload.ssh.hosts[0].passwordConfigured, false);
+  assert.equal(payload.ssh.hosts[0].privateKeyConfigured, false);
+  assert.equal(payload.ssh.hosts[0].privateKeyPassphraseConfigured, false);
+  assert.equal(payload.ssh.hosts[0].proxy.password, "");
+  assert.equal(payload.ssh.hosts[0].proxy.passwordConfigured, true);
+});
+
 test("workspace project selection does not rewrite global system workdir or sync active project", () => {
   const resolvedSystem = settings.resolveWorkspaceProjects(
     {

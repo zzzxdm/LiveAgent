@@ -272,6 +272,7 @@ function normalizeSession(input: RawTerminalSession): SshSessionSummary | null {
 }
 
 function hostCredentialConfigured(host: SshHostConfig) {
+  if (host.authType === "agent") return true;
   if (host.authType === "privateKey") {
     return (
       host.privateKey.trim().length > 0 ||

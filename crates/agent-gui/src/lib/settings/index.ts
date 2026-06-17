@@ -127,12 +127,7 @@ export type ChatSidebarSettings = {
   recentCollapsed: boolean;
 };
 
-export type ProjectToolsPanelTab =
-  | "terminal"
-  | "fileTree"
-  | "gitReview"
-  | "tunnel"
-  | "sshTunnel";
+export type ProjectToolsPanelTab = "terminal" | "fileTree" | "gitReview" | "tunnel" | "sshTunnel";
 
 export type ProjectToolsPanelSettings = {
   width: number;
@@ -246,7 +241,7 @@ export type AgentPromptTemplate = {
   enabled: boolean;
 };
 
-export type SshAuthType = "password" | "privateKey";
+export type SshAuthType = "password" | "privateKey" | "agent";
 export type SshProxyType = "socks5" | "http";
 
 export type SshProxyConfig = {
@@ -540,9 +535,7 @@ function trimTrailingWindowsProjectSlashes(path: string): string {
 }
 
 function normalizeWindowsProjectPathKey(path: string): string {
-  const stripped = path
-    .replace(/^[\\/]{2}\?[\\/]UNC[\\/]/i, "//")
-    .replace(/^[\\/]{2}\?[\\/]/, "");
+  const stripped = path.replace(/^[\\/]{2}\?[\\/]UNC[\\/]/i, "//").replace(/^[\\/]{2}\?[\\/]/, "");
   return trimTrailingWindowsProjectSlashes(stripped.replace(/\\/g, "/")).toLowerCase();
 }
 
@@ -1320,7 +1313,13 @@ export function normalizeAgentPromptTemplate(input: unknown): AgentPromptTemplat
 }
 
 function normalizeSshAuthType(input: unknown): SshAuthType {
-  return input === "privateKey" ? "privateKey" : "password";
+  switch (input) {
+    case "privateKey":
+    case "agent":
+      return input;
+    default:
+      return "password";
+  }
 }
 
 function normalizeSshPort(input: unknown): number {
@@ -1359,10 +1358,20 @@ export function normalizeSshHostConfig(input: unknown): SshHostConfig {
   const host = typeof obj.host === "string" ? obj.host.trim() : "";
   const name =
     typeof obj.name === "string" && obj.name.trim() ? obj.name.trim() : host || "未命名 SSH";
-  const password = normalizeOptionalText(obj.password);
-  const privateKey = normalizeOptionalText(obj.privateKey);
-  const privateKeyPath = normalizeOptionalText(obj.privateKeyPath);
-  const privateKeyPassphrase = normalizeOptionalText(obj.privateKeyPassphrase);
+  const authType = normalizeSshAuthType(obj.authType);
+  const password = authType === "agent" ? "" : normalizeOptionalText(obj.password);
+  const privateKey = authType === "agent" ? "" : normalizeOptionalText(obj.privateKey);
+  const privateKeyPath = authType === "agent" ? "" : normalizeOptionalText(obj.privateKeyPath);
+  const privateKeyPassphrase =
+    authType === "agent" ? "" : normalizeOptionalText(obj.privateKeyPassphrase);
+  const passwordConfigured =
+    authType !== "agent" && (password.length > 0 || obj.passwordConfigured === true);
+  const privateKeyConfigured =
+    authType !== "agent" &&
+    (privateKey.length > 0 || privateKeyPath.length > 0 || obj.privateKeyConfigured === true);
+  const privateKeyPassphraseConfigured =
+    authType !== "agent" &&
+    (privateKeyPassphrase.length > 0 || obj.privateKeyPassphraseConfigured === true);
 
   return {
     id: typeof obj.id === "string" && obj.id.trim() ? obj.id.trim() : crypto.randomUUID(),
@@ -1371,16 +1380,14 @@ export function normalizeSshHostConfig(input: unknown): SshHostConfig {
     host,
     port: normalizeSshPort(obj.port),
     username: typeof obj.username === "string" ? obj.username.trim() : "",
-    authType: normalizeSshAuthType(obj.authType),
+    authType,
     password,
-    passwordConfigured: password.length > 0 || obj.passwordConfigured === true,
+    passwordConfigured,
     privateKey,
     privateKeyPath,
-    privateKeyConfigured:
-      privateKey.length > 0 || privateKeyPath.length > 0 || obj.privateKeyConfigured === true,
+    privateKeyConfigured,
     privateKeyPassphrase,
-    privateKeyPassphraseConfigured:
-      privateKeyPassphrase.length > 0 || obj.privateKeyPassphraseConfigured === true,
+    privateKeyPassphraseConfigured,
     proxy: normalizeSshProxyConfig(obj.proxy),
   };
 }
@@ -1912,12 +1919,7 @@ export function normalizeCustomSettings(
       recentCollapsed: chatSidebar.recentCollapsed === true,
     },
     projectToolsPanel: {
-      width: normalizeIntegerInRange(
-        projectToolsPanel.width,
-        320,
-        1280,
-        420,
-      ),
+      width: normalizeIntegerInRange(projectToolsPanel.width, 320, 1280, 420),
       activeTab: projectToolsPanelActiveTab,
       activeTabs: normalizeProjectToolsPanelActiveTabs(projectToolsPanel.activeTabs),
       tabOrders: normalizeProjectToolsPanelTabOrders(projectToolsPanel.tabOrders),
@@ -2061,10 +2063,7 @@ export function updateSsh(prev: AppSettings, patch: Partial<SshSettings>): AppSe
   });
 }
 
-function normalizeSshProjectHostIdList(
-  ssh: SshSettings,
-  hostIds: readonly string[],
-): string[] {
+function normalizeSshProjectHostIdList(ssh: SshSettings, hostIds: readonly string[]): string[] {
   const availableHostIds = new Set(ssh.hosts.map((host) => host.id));
   const seen = new Set<string>();
   const ids: string[] = [];
@@ -2081,10 +2080,7 @@ function normalizeSshProjectHostIdList(
 export function getSshProjectHostIds(ssh: SshSettings, projectPathKey: string): string[] {
   const normalizedPathKey = workspaceProjectPathKey(projectPathKey);
   if (!normalizedPathKey) return [];
-  return normalizeSshProjectHostIdList(
-    ssh,
-    ssh.projectHostAssociations[normalizedPathKey] ?? [],
-  );
+  return normalizeSshProjectHostIdList(ssh, ssh.projectHostAssociations[normalizedPathKey] ?? []);
 }
 
 export function updateSshProjectHostIds(
@@ -2365,10 +2361,9 @@ export function removeProjectToolsProjectState(
   );
   const removedTunnelOpenProjectPathKey =
     nextTunnelOpenProjectPathKeys.length !== tunnelOpenProjectPathKeys.length;
-  const sshTunnelOpenProjectPathKeys =
-    prev.customSettings.projectToolsSshTunnel.openProjectPathKeys
-      .map((pathKey) => workspaceProjectPathKey(pathKey))
-      .filter(Boolean);
+  const sshTunnelOpenProjectPathKeys = prev.customSettings.projectToolsSshTunnel.openProjectPathKeys
+    .map((pathKey) => workspaceProjectPathKey(pathKey))
+    .filter(Boolean);
   const nextSshTunnelOpenProjectPathKeys = sshTunnelOpenProjectPathKeys.filter(
     (pathKey) => pathKey !== normalizedPathKey,
   );

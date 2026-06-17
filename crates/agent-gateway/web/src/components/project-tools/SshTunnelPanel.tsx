@@ -65,9 +65,9 @@ function endpointLabel(host: SshHostConfig) {
 }
 
 function authLabel(host: Pick<SshHostConfig, "authType">, t: (key: string) => string) {
-  return host.authType === "privateKey"
-    ? t("settings.sshAuthPrivateKey")
-    : t("settings.sshAuthPassword");
+  if (host.authType === "privateKey") return t("settings.sshAuthPrivateKey");
+  if (host.authType === "agent") return t("settings.sshAuthAgent");
+  return t("settings.sshAuthPassword");
 }
 
 function hostHasProxy(host: SshHostConfig) {
@@ -79,7 +79,8 @@ function hostHasProxy(host: SshHostConfig) {
   );
 }
 
-function hostSecretReady(host: SshHostConfig) {
+export function hostSecretReady(host: SshHostConfig) {
+  if (host.authType === "agent") return true;
   if (host.authType === "privateKey") {
     return (
       host.privateKey.trim().length > 0 ||
@@ -90,8 +91,7 @@ function hostSecretReady(host: SshHostConfig) {
   return host.password.trim().length > 0 || host.passwordConfigured === true;
 }
 
-function hostStatusMessage(host: SshHostConfig, t: (key: string) => string) {
-  if (hostHasProxy(host)) return t("projectTools.sshTunnelProxyUnsupported");
+export function hostStatusMessage(host: SshHostConfig, t: (key: string) => string) {
   if (!hostSecretReady(host)) return t("projectTools.sshTunnelMissingSecret");
   return "";
 }
@@ -149,6 +149,8 @@ function HostMetaTags(props: { host: SshHostConfig }) {
     tags.push(host.privateKeyPath.trim());
   } else if (host.authType === "privateKey" && host.privateKeyConfigured) {
     tags.push(t("settings.sshPrivateKeyConfigured"));
+  } else if (host.authType === "agent") {
+    tags.push(t("settings.sshAgentConfigured"));
   }
   if (host.privateKeyPassphraseConfigured) {
     tags.push(t("settings.sshPrivateKeyPassphraseConfigured"));
