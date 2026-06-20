@@ -1060,6 +1060,17 @@ export function ChatPage(props: ChatPageProps) {
     [activeWorkspaceProjectPath, setSettings],
   );
 
+  const ensureSshTunnelToolTab = useCallback(
+    (projectPathKey?: string) => {
+      const targetProjectPathKey =
+        workspaceProjectPathKey(projectPathKey) ||
+        workspaceProjectPathKey(activeWorkspaceProjectPath);
+      if (!targetProjectPathKey) return;
+      setSettings((prev) => openRightDockSingletonTab(prev, targetProjectPathKey, "sshTunnel"));
+    },
+    [activeWorkspaceProjectPath, setSettings],
+  );
+
   const handleBrowseWorkspaceProjectInSystemFileManager = useCallback(
     async (project: WorkspaceProject) => {
       if (!(await checkWorkspaceProjectDirectory(project))) {
@@ -3678,6 +3689,11 @@ export function ChatPage(props: ChatPageProps) {
             associatedSshHostIds: effectiveAssociatedSshHostIds,
             sshManagerRemoteAllowed:
               !gatewayBridgeRequest || settings.remote.enableWebSshTerminal === true,
+            onSshSessionsChanged: (change) => {
+              if (change.action === "create") {
+                ensureSshTunnelToolTab(change.projectPathKey);
+              }
+            },
             onTunnelsChanged: (change) => {
               setTunnelRefreshToken((current) => current + 1);
               if (change.action === "create") {
