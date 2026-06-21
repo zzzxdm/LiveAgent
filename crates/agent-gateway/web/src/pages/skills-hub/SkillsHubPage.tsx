@@ -840,16 +840,31 @@ export function SkillsHubPage(props: SkillsHubPageProps) {
                                     </button>
                                   )}
                                 </ConfirmDeletePopover>
-                                <div
-                                  className={cn(
-                                    "flex h-5 w-5 items-center justify-center rounded-md border transition-all",
-                                    checked
-                                      ? "border-foreground/80 bg-foreground/85 text-background shadow-[0_2px_6px_-2px_rgba(15,23,42,0.35)]"
-                                      : "border-border bg-background group-hover:border-foreground/40",
-                                  )}
-                                >
-                                  {checked ? <Check className="h-3 w-3" /> : null}
-                                </div>
+                                <label className="relative flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center">
+                                  <input
+                                    type="checkbox"
+                                    checked={checked}
+                                    aria-label={`${t("skills.select")}: ${skill.name}`}
+                                    onClick={(event) => event.stopPropagation()}
+                                    onChange={(event) => {
+                                      event.stopPropagation();
+                                      toggleSkill(skill.name, event.currentTarget.checked);
+                                    }}
+                                    className="peer sr-only"
+                                  />
+                                  <span
+                                    aria-hidden="true"
+                                    className={cn(
+                                      "pointer-events-none flex h-5 w-5 items-center justify-center rounded-md border transition-all",
+                                      "peer-focus-visible:outline-hidden peer-focus-visible:ring-2 peer-focus-visible:ring-foreground/15",
+                                      checked
+                                        ? "border-foreground/80 bg-foreground/85 text-background shadow-[0_2px_6px_-2px_rgba(15,23,42,0.35)]"
+                                        : "border-border bg-background group-hover:border-foreground/40",
+                                    )}
+                                  >
+                                    {checked ? <Check className="h-3 w-3" /> : null}
+                                  </span>
+                                </label>
                               </div>
                             )}
                           </div>
