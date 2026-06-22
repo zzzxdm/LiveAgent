@@ -71,14 +71,32 @@ export type TerminalShellOptions = {
   defaultShell: string;
 };
 
-export type TerminalEvent = {
-  kind: string;
+export type SshTerminalTabKind = "bash" | "sftp";
+
+export type SshTerminalTab = {
+  id: string;
   sessionId: string;
   projectPathKey: string;
-  session: TerminalSession;
+  kind: SshTerminalTabKind;
+  createdAt: number;
+  updatedAt: number;
+};
+
+export type SshTerminalTabsSnapshot = {
+  projectPathKey: string;
+  tabs: SshTerminalTab[];
+  revision: number;
+};
+
+export type TerminalEvent = {
+  kind: string;
+  sessionId?: string;
+  projectPathKey: string;
+  session?: TerminalSession;
   data?: string;
   outputStartOffset?: number;
   outputEndOffset?: number;
+  sshTabs?: SshTerminalTabsSnapshot;
 };
 
 export type TerminalClient = {
@@ -108,6 +126,12 @@ export type TerminalClient = {
   }): Promise<TerminalSshCreateResult>;
   cancelSshPrompt(promptId: string): Promise<void>;
   sshLatency(sessionId: string, projectPathKey?: string): Promise<TerminalSshLatency>;
+  listSshTerminalTabs(projectPathKey: string): Promise<SshTerminalTabsSnapshot>;
+  openSshTerminalTab(params: {
+    sessionId: string;
+    kind: SshTerminalTabKind;
+  }): Promise<SshTerminalTabsSnapshot>;
+  closeSshTerminalTab(tabId: string): Promise<SshTerminalTabsSnapshot>;
   snapshot(
     sessionId: string,
     maxBytes?: number,

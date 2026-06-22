@@ -4,8 +4,8 @@ use tauri::State;
 
 use crate::runtime::sftp::SftpSessionRegistry;
 use crate::runtime::terminal::{
-    terminal_shell_options as runtime_terminal_shell_options, TerminalListResponse,
-    TerminalReadTailResponse, TerminalSessionRecord, TerminalSessionRegistry,
+    terminal_shell_options as runtime_terminal_shell_options, SshTerminalTabsSnapshot,
+    TerminalListResponse, TerminalReadTailResponse, TerminalSessionRecord, TerminalSessionRegistry,
     TerminalShellOptionsResponse, TerminalSnapshotResponse, TerminalSshCreateResponse,
     TerminalSshExecResponse, TerminalSshLatencyResponse,
 };
@@ -106,6 +106,31 @@ pub async fn terminal_ssh_exec(
         .clone()
         .ssh_exec(session_id, command, cwd, timeout_ms, max_bytes)
         .await
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub fn ssh_terminal_tabs_list(
+    registry: State<'_, Arc<TerminalSessionRegistry>>,
+    project_path_key: String,
+) -> Result<SshTerminalTabsSnapshot, String> {
+    registry.ssh_terminal_tabs_list(project_path_key)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub fn ssh_terminal_tab_open(
+    registry: State<'_, Arc<TerminalSessionRegistry>>,
+    session_id: String,
+    kind: String,
+) -> Result<SshTerminalTabsSnapshot, String> {
+    registry.ssh_terminal_tab_open(session_id, kind)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub fn ssh_terminal_tab_close(
+    registry: State<'_, Arc<TerminalSessionRegistry>>,
+    tab_id: String,
+) -> Result<SshTerminalTabsSnapshot, String> {
+    registry.ssh_terminal_tab_close(tab_id)
 }
 
 #[tauri::command(rename_all = "snake_case")]

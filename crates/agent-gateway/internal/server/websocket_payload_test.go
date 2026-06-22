@@ -112,6 +112,40 @@ func TestWebsocketTerminalPayloadsPreserveOutputOffsets(t *testing.T) {
 	}
 }
 
+func TestWebsocketTerminalPayloadsIncludeSshTabsSnapshot(t *testing.T) {
+	response := websocketTerminalResponsePayload(&gatewayv1.TerminalResponse{
+		Action: "ssh_tabs_list",
+		SshTabs: &gatewayv1.TerminalSshTabsSnapshot{
+			ProjectPathKey: "/workspace/project",
+			Revision:       7,
+			Tabs: []*gatewayv1.TerminalSshTab{
+				{
+					Id:             "bash:ssh-1",
+					SessionId:      "ssh-1",
+					ProjectPathKey: "/workspace/project",
+					Kind:           "bash",
+					CreatedAt:      10,
+					UpdatedAt:      12,
+				},
+			},
+		},
+	})
+	snapshot, ok := response["ssh_tabs"].(map[string]any)
+	if !ok {
+		t.Fatalf("ssh_tabs payload missing: %#v", response)
+	}
+	if snapshot["project_path_key"] != "/workspace/project" || snapshot["revision"] != uint64(7) {
+		t.Fatalf("ssh_tabs snapshot = %#v", snapshot)
+	}
+	tabs, ok := snapshot["tabs"].([]map[string]any)
+	if !ok || len(tabs) != 1 {
+		t.Fatalf("ssh_tabs tabs = %#v", snapshot["tabs"])
+	}
+	if tabs[0]["session_id"] != "ssh-1" || tabs[0]["kind"] != "bash" {
+		t.Fatalf("ssh_tabs tab = %#v", tabs[0])
+	}
+}
+
 func TestWebsocketProtoPayloadPreservesFrontendNumberTypes(t *testing.T) {
 	payload := websocketConversationSummaryPayload(&gatewayv1.ConversationSummary{
 		Id:           "conversation-1",

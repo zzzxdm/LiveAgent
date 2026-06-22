@@ -5897,6 +5897,7 @@ export default function GatewayApp() {
             workspaceSshTerminalMounted={workspaceSshTerminalMounted}
             workspaceSshTerminalOpenRequest={workspaceSshTerminalOpenRequest}
             workspaceSshTerminalOpen={workspaceSshTerminalOpen}
+            terminalProjectPathKey={terminalProjectPathKey}
             terminalClient={terminalClient}
             sftpClient={sftpClient}
             terminalSessions={terminalSessions}

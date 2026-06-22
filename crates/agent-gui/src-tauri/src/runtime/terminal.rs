@@ -15,7 +15,7 @@ use std::net::{IpAddr, Ipv6Addr};
 use std::path::{Path, PathBuf};
 use std::str;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter};
@@ -142,6 +142,25 @@ pub struct TerminalSshLatencyResponse {
     pub latency_ms: u32,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SshTerminalTabRecord {
+    pub id: String,
+    pub session_id: String,
+    pub project_path_key: String,
+    pub kind: String,
+    pub created_at: u128,
+    pub updated_at: u128,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SshTerminalTabsSnapshot {
+    pub project_path_key: String,
+    pub tabs: Vec<SshTerminalTabRecord>,
+    pub revision: u64,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TerminalSshExecResponse {
@@ -191,13 +210,16 @@ pub struct TerminalEventPayload {
     pub kind: String,
     pub session_id: String,
     pub project_path_key: String,
-    pub session: TerminalSessionRecord,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session: Option<TerminalSessionRecord>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub data: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output_start_offset: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output_end_offset: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ssh_tabs: Option<SshTerminalTabsSnapshot>,
 }
 
 #[derive(Debug, Clone)]
@@ -408,10 +430,18 @@ struct TerminalOutputTail {
     output_end_offset: u64,
 }
 
+#[derive(Debug, Default)]
+struct SshTerminalTabsState {
+    tabs: Vec<SshTerminalTabRecord>,
+    revision: u64,
+}
+
 #[derive(Default)]
 pub struct TerminalSessionRegistry {
     sessions: Mutex<HashMap<String, Arc<TerminalSessionEntry>>>,
     pending_ssh_prompts: Mutex<HashMap<String, PendingSshPrompt>>,
+    ssh_terminal_tabs_tx: Mutex<()>,
+    ssh_terminal_tabs: Mutex<HashMap<String, SshTerminalTabsState>>,
     app_handle: Mutex<Option<AppHandle>>,
     subscribers: Arc<Mutex<HashMap<usize, mpsc::Sender<TerminalEvent>>>>,
     next_subscriber_id: AtomicUsize,
@@ -1199,6 +1229,107 @@ impl TerminalSessionRegistry {
         })
     }
 
+    pub fn ssh_terminal_tabs_list(
+        &self,
+        project_path_key: String,
+    ) -> Result<SshTerminalTabsSnapshot, String> {
+        let project_key = required_project_key(project_path_key)?;
+        let (snapshot, should_broadcast) = {
+            let _tabs_tx = self.lock_ssh_terminal_tabs_tx()?;
+            if let Some(snapshot) = self.prune_invalid_ssh_terminal_tabs_for_project(&project_key) {
+                (snapshot, true)
+            } else {
+                (self.ssh_terminal_tabs_snapshot(&project_key), false)
+            }
+        };
+        if should_broadcast {
+            self.broadcast_ssh_tabs_snapshot(snapshot.clone());
+        }
+        Ok(snapshot)
+    }
+
+    pub fn ssh_terminal_tab_open(
+        &self,
+        session_id: String,
+        kind: String,
+    ) -> Result<SshTerminalTabsSnapshot, String> {
+        let kind = normalize_ssh_terminal_tab_kind(&kind)?;
+        let (snapshot, should_broadcast) = {
+            let _tabs_tx = self.lock_ssh_terminal_tabs_tx()?;
+            let session = self.valid_ssh_terminal_tab_session(&session_id, &kind)?;
+            let tab_id = ssh_terminal_tab_id(&session.id, &kind);
+            let now = now_ms();
+            let mut tabs_by_project = self
+                .ssh_terminal_tabs
+                .lock()
+                .map_err(|_| "ssh terminal tabs registry poisoned".to_string())?;
+            let state = tabs_by_project
+                .entry(session.project_path_key.clone())
+                .or_default();
+            if state.tabs.iter().any(|tab| tab.id == tab_id) {
+                return Ok(ssh_terminal_tabs_snapshot_from_state(
+                    &session.project_path_key,
+                    state,
+                ));
+            } else {
+                state.tabs.push(SshTerminalTabRecord {
+                    id: tab_id.clone(),
+                    session_id: session.id.clone(),
+                    project_path_key: session.project_path_key.clone(),
+                    kind,
+                    created_at: now,
+                    updated_at: now,
+                });
+            }
+            state.revision = state.revision.saturating_add(1);
+            (
+                ssh_terminal_tabs_snapshot_from_state(&session.project_path_key, state),
+                true,
+            )
+        };
+        if should_broadcast {
+            self.broadcast_ssh_tabs_snapshot(snapshot.clone());
+        }
+        Ok(snapshot)
+    }
+
+    pub fn ssh_terminal_tab_close(
+        &self,
+        tab_id: String,
+    ) -> Result<SshTerminalTabsSnapshot, String> {
+        let tab_id = tab_id.trim();
+        if tab_id.is_empty() {
+            return Err("tab_id is required".to_string());
+        }
+        let snapshot = {
+            let _tabs_tx = self.lock_ssh_terminal_tabs_tx()?;
+            let mut tabs_by_project = self
+                .ssh_terminal_tabs
+                .lock()
+                .map_err(|_| "ssh terminal tabs registry poisoned".to_string())?;
+            let Some(project_key) = tabs_by_project.iter().find_map(|(project_key, state)| {
+                state
+                    .tabs
+                    .iter()
+                    .any(|tab| tab.id == tab_id)
+                    .then(|| project_key.clone())
+            }) else {
+                return Err(format!("ssh terminal tab not found: {tab_id}"));
+            };
+            let state = tabs_by_project
+                .get_mut(&project_key)
+                .ok_or_else(|| format!("ssh terminal tab not found: {tab_id}"))?;
+            let Some(index) = state.tabs.iter().position(|tab| tab.id == tab_id) else {
+                return Err(format!("ssh terminal tab not found: {tab_id}"));
+            };
+            state.tabs.remove(index);
+            state.revision = state.revision.saturating_add(1);
+            ssh_terminal_tabs_snapshot_from_state(&project_key, state)
+        };
+        self.broadcast_ssh_tabs_snapshot(snapshot.clone());
+        Ok(snapshot)
+    }
+
     pub async fn ssh_latency(
         self: &Arc<Self>,
         session_id: String,
@@ -1415,17 +1546,25 @@ impl TerminalSessionRegistry {
     pub fn close(&self, session_id: String) -> Result<TerminalSessionRecord, String> {
         let entry = self.entry(&session_id)?;
         terminate_terminal_entry(&entry);
-        self.mark_finished(&session_id);
-        self.sessions
-            .lock()
-            .expect("terminal session registry poisoned")
-            .remove(session_id.trim());
-        let session = entry
-            .record
-            .lock()
-            .map_err(|_| "terminal session lock poisoned".to_string())?
-            .clone();
+        let (session, tab_snapshots) = {
+            let _tabs_tx = self.lock_ssh_terminal_tabs_tx()?;
+            self.mark_finished(&session_id);
+            self.sessions
+                .lock()
+                .expect("terminal session registry poisoned")
+                .remove(session_id.trim());
+            let session = entry
+                .record
+                .lock()
+                .map_err(|_| "terminal session lock poisoned".to_string())?
+                .clone();
+            let tab_snapshots = self.prune_ssh_terminal_tabs_for_session_locked(&session.id);
+            (session, tab_snapshots)
+        };
         self.broadcast("closed", &entry, None, None, None);
+        for snapshot in tab_snapshots {
+            self.broadcast_ssh_tabs_snapshot(snapshot);
+        }
         Ok(session)
     }
 
@@ -1521,6 +1660,125 @@ impl TerminalSessionRegistry {
             output: snapshot.output,
             truncated: snapshot.truncated,
         })
+    }
+
+    fn lock_ssh_terminal_tabs_tx(&self) -> Result<MutexGuard<'_, ()>, String> {
+        self.ssh_terminal_tabs_tx
+            .lock()
+            .map_err(|_| "ssh terminal tabs transaction lock poisoned".to_string())
+    }
+
+    fn valid_ssh_terminal_tab_session(
+        &self,
+        session_id: &str,
+        kind: &str,
+    ) -> Result<TerminalSessionRecord, String> {
+        let session = self.record(session_id.trim().to_string())?;
+        if session.kind.trim() != "ssh" {
+            return Err("terminal session is not an SSH connection".to_string());
+        }
+        let ssh = session
+            .ssh
+            .as_ref()
+            .ok_or_else(|| "SSH session metadata is missing".to_string())?;
+        if ssh.status == SSH_STATUS_DISCONNECTED {
+            return Err("SSH connection is disconnected".to_string());
+        }
+        if kind == "sftp" && !ssh.sftp_enabled {
+            return Err("SFTP is not enabled for this SSH session".to_string());
+        }
+        Ok(session)
+    }
+
+    fn ssh_terminal_tabs_snapshot(&self, project_path_key: &str) -> SshTerminalTabsSnapshot {
+        self.ssh_terminal_tabs
+            .lock()
+            .ok()
+            .and_then(|tabs_by_project| {
+                tabs_by_project
+                    .get(project_path_key)
+                    .map(|state| ssh_terminal_tabs_snapshot_from_state(project_path_key, state))
+            })
+            .unwrap_or_else(|| SshTerminalTabsSnapshot {
+                project_path_key: project_path_key.to_string(),
+                tabs: Vec::new(),
+                revision: 0,
+            })
+    }
+
+    fn prune_invalid_ssh_terminal_tabs_for_project(
+        &self,
+        project_path_key: &str,
+    ) -> Option<SshTerminalTabsSnapshot> {
+        let valid_sessions = self
+            .sessions
+            .lock()
+            .ok()
+            .map(|sessions| {
+                sessions
+                    .values()
+                    .filter_map(|entry| entry.record.lock().ok().map(|record| record.clone()))
+                    .filter(|record| {
+                        project_path_keys_equal(&record.project_path_key, project_path_key)
+                            && record.kind.trim() == "ssh"
+                            && record
+                                .ssh
+                                .as_ref()
+                                .map(|ssh| ssh.status != SSH_STATUS_DISCONNECTED)
+                                .unwrap_or(false)
+                    })
+                    .map(|record| {
+                        (
+                            record.id,
+                            record.ssh.map(|ssh| ssh.sftp_enabled).unwrap_or(false),
+                        )
+                    })
+                    .collect::<HashMap<_, _>>()
+            })
+            .unwrap_or_default();
+
+        let mut tabs_by_project = self.ssh_terminal_tabs.lock().ok()?;
+        let state = tabs_by_project.get_mut(project_path_key)?;
+        let before_len = state.tabs.len();
+        state.tabs.retain(|tab| {
+            valid_sessions
+                .get(&tab.session_id)
+                .map(|sftp_enabled| tab.kind != "sftp" || *sftp_enabled)
+                .unwrap_or(false)
+        });
+        if state.tabs.len() == before_len {
+            return None;
+        }
+        state.revision = state.revision.saturating_add(1);
+        Some(ssh_terminal_tabs_snapshot_from_state(
+            project_path_key,
+            state,
+        ))
+    }
+
+    fn prune_ssh_terminal_tabs_for_session_locked(
+        &self,
+        session_id: &str,
+    ) -> Vec<SshTerminalTabsSnapshot> {
+        let session_id = session_id.trim();
+        if session_id.is_empty() {
+            return Vec::new();
+        }
+        let mut tabs_by_project = match self.ssh_terminal_tabs.lock() {
+            Ok(tabs_by_project) => tabs_by_project,
+            Err(_) => return Vec::new(),
+        };
+        let mut snapshots = Vec::new();
+        for (project_key, state) in tabs_by_project.iter_mut() {
+            let before_len = state.tabs.len();
+            state.tabs.retain(|tab| tab.session_id != session_id);
+            if state.tabs.len() == before_len {
+                continue;
+            }
+            state.revision = state.revision.saturating_add(1);
+            snapshots.push(ssh_terminal_tabs_snapshot_from_state(project_key, state));
+        }
+        snapshots
     }
 
     fn close_ids(&self, ids: Vec<String>) -> Result<TerminalListResponse, String> {
@@ -1671,22 +1929,33 @@ impl TerminalSessionRegistry {
     }
 
     fn mark_ssh_disconnected(&self, entry: &Arc<TerminalSessionEntry>) {
-        {
-            let mut record = match entry.record.lock() {
-                Ok(record) => record,
-                Err(_) => return,
+        let tab_snapshots = {
+            let Ok(_tabs_tx) = self.lock_ssh_terminal_tabs_tx() else {
+                return;
             };
-            record.running = false;
-            record.finished_at = Some(now_ms());
-            record.exit_code = None;
-            record.updated_at = now_ms();
-            if let Some(ssh) = record.ssh.as_mut() {
-                ssh.status = SSH_STATUS_DISCONNECTED.to_string();
-                ssh.reconnect_attempt = SSH_RECONNECT_MAX_ATTEMPTS;
-                ssh.reconnect_max_attempts = SSH_RECONNECT_MAX_ATTEMPTS;
-            }
-        }
+            let session_id = {
+                let mut record = match entry.record.lock() {
+                    Ok(record) => record,
+                    Err(_) => return,
+                };
+                let session_id = record.id.clone();
+                record.running = false;
+                record.finished_at = Some(now_ms());
+                record.exit_code = None;
+                record.updated_at = now_ms();
+                if let Some(ssh) = record.ssh.as_mut() {
+                    ssh.status = SSH_STATUS_DISCONNECTED.to_string();
+                    ssh.reconnect_attempt = SSH_RECONNECT_MAX_ATTEMPTS;
+                    ssh.reconnect_max_attempts = SSH_RECONNECT_MAX_ATTEMPTS;
+                }
+                session_id
+            };
+            self.prune_ssh_terminal_tabs_for_session_locked(&session_id)
+        };
         self.broadcast("exit", entry, None, None, None);
+        for snapshot in tab_snapshots {
+            self.broadcast_ssh_tabs_snapshot(snapshot);
+        }
     }
 
     async fn mark_ssh_shell_ended(
@@ -1723,10 +1992,40 @@ impl TerminalSessionRegistry {
             kind: kind.to_string(),
             session_id: record.id.clone(),
             project_path_key: record.project_path_key.clone(),
-            session: record,
+            session: Some(record),
             data,
             output_start_offset,
             output_end_offset,
+            ssh_tabs: None,
+        };
+
+        if let Ok(app_handle) = self.app_handle.lock() {
+            if let Some(app_handle) = app_handle.as_ref() {
+                let _ = app_handle.emit(TERMINAL_EVENT_NAME, &payload);
+            }
+        }
+
+        let subscribers = self
+            .subscribers
+            .lock()
+            .map(|subscribers| subscribers.values().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        let event = TerminalEvent { payload };
+        for subscriber in subscribers {
+            let _ = subscriber.send(event.clone());
+        }
+    }
+
+    fn broadcast_ssh_tabs_snapshot(&self, snapshot: SshTerminalTabsSnapshot) {
+        let payload = TerminalEventPayload {
+            kind: "ssh_tabs_updated".to_string(),
+            session_id: String::new(),
+            project_path_key: snapshot.project_path_key.clone(),
+            session: None,
+            data: None,
+            output_start_offset: None,
+            output_end_offset: None,
+            ssh_tabs: Some(snapshot),
         };
 
         if let Ok(app_handle) = self.app_handle.lock() {
@@ -3022,6 +3321,38 @@ fn terminal_ssh_create_response_from_snapshot(
     }
 }
 
+fn required_project_key(project_path_key: String) -> Result<String, String> {
+    let project_key = normalize_project_path_key(&project_path_key);
+    if project_key.is_empty() {
+        return Err("project_path_key is required".to_string());
+    }
+    Ok(project_key)
+}
+
+fn normalize_ssh_terminal_tab_kind(kind: &str) -> Result<String, String> {
+    match kind.trim().to_ascii_lowercase().as_str() {
+        "bash" => Ok("bash".to_string()),
+        "sftp" => Ok("sftp".to_string()),
+        "" => Err("tab kind is required".to_string()),
+        other => Err(format!("unsupported ssh terminal tab kind: {other}")),
+    }
+}
+
+fn ssh_terminal_tab_id(session_id: &str, kind: &str) -> String {
+    format!("{}:{}", kind.trim(), session_id.trim())
+}
+
+fn ssh_terminal_tabs_snapshot_from_state(
+    project_path_key: &str,
+    state: &SshTerminalTabsState,
+) -> SshTerminalTabsSnapshot {
+    SshTerminalTabsSnapshot {
+        project_path_key: project_path_key.to_string(),
+        tabs: state.tabs.clone(),
+        revision: state.revision,
+    }
+}
+
 pub struct TerminalSubscriberGuard {
     id: usize,
     subscribers: Arc<Mutex<HashMap<usize, mpsc::Sender<TerminalEvent>>>>,
@@ -3491,6 +3822,196 @@ mod tests {
         assert_eq!(decoder.push(&[0xe4, 0xb8]), "");
         assert_eq!(decoder.push(&[0xad]), "中");
         assert_eq!(decoder.finish(), "");
+    }
+
+    fn insert_test_ssh_session(
+        registry: &TerminalSessionRegistry,
+        id: &str,
+        project_path_key: &str,
+        sftp_enabled: bool,
+        status: &str,
+    ) {
+        let now = now_ms();
+        let record = TerminalSessionRecord {
+            id: id.to_string(),
+            project_path_key: normalize_project_path_key(project_path_key),
+            cwd: project_path_key.to_string(),
+            shell: "ssh".to_string(),
+            title: id.to_string(),
+            kind: "ssh".to_string(),
+            ssh: Some(TerminalSshMetadata {
+                host_id: format!("host-{id}"),
+                host_name: format!("Host {id}"),
+                username: "tester".to_string(),
+                host: "127.0.0.1".to_string(),
+                port: 22,
+                auth_type: "password".to_string(),
+                status: status.to_string(),
+                reconnect_attempt: 0,
+                reconnect_max_attempts: SSH_RECONNECT_MAX_ATTEMPTS,
+                sftp_enabled,
+            }),
+            pid: None,
+            cols: DEFAULT_COLS,
+            rows: DEFAULT_ROWS,
+            created_at: now,
+            updated_at: now,
+            finished_at: None,
+            exit_code: None,
+            running: status == SSH_STATUS_CONNECTED,
+        };
+        let entry = Arc::new(TerminalSessionEntry {
+            backend: TerminalSessionBackend::Ssh {
+                runtime: Arc::new(SshSessionRuntime::new()),
+            },
+            record: Mutex::new(record),
+            output: Mutex::new(TerminalOutputBuffer::default()),
+        });
+        registry
+            .sessions
+            .lock()
+            .expect("terminal session registry poisoned")
+            .insert(id.to_string(), entry);
+    }
+
+    #[test]
+    fn ssh_terminal_tab_open_is_idempotent_without_shared_active() {
+        let registry = TerminalSessionRegistry::default();
+        insert_test_ssh_session(
+            &registry,
+            "ssh-1",
+            "/tmp/project",
+            true,
+            SSH_STATUS_CONNECTED,
+        );
+
+        let first = registry
+            .ssh_terminal_tab_open("ssh-1".to_string(), "bash".to_string())
+            .expect("open bash tab");
+        let second = registry
+            .ssh_terminal_tab_open("ssh-1".to_string(), "bash".to_string())
+            .expect("reopen bash tab");
+        let sftp = registry
+            .ssh_terminal_tab_open("ssh-1".to_string(), "sftp".to_string())
+            .expect("open sftp tab");
+
+        assert_eq!(first.tabs.len(), 1);
+        assert_eq!(second.tabs.len(), 1);
+        assert_eq!(sftp.tabs.len(), 2);
+        assert_eq!(first.revision, second.revision);
+    }
+
+    #[test]
+    fn ssh_terminal_tab_close_is_global_without_closing_session() {
+        let registry = TerminalSessionRegistry::default();
+        insert_test_ssh_session(
+            &registry,
+            "ssh-1",
+            "/tmp/project",
+            true,
+            SSH_STATUS_CONNECTED,
+        );
+        insert_test_ssh_session(
+            &registry,
+            "ssh-2",
+            "/tmp/project",
+            true,
+            SSH_STATUS_CONNECTED,
+        );
+        registry
+            .ssh_terminal_tab_open("ssh-1".to_string(), "bash".to_string())
+            .expect("open first tab");
+        registry
+            .ssh_terminal_tab_open("ssh-2".to_string(), "bash".to_string())
+            .expect("open second tab");
+
+        let snapshot = registry
+            .ssh_terminal_tab_close("bash:ssh-1".to_string())
+            .expect("close first tab");
+
+        assert_eq!(snapshot.tabs.len(), 1);
+        assert!(registry.session_record("ssh-1".to_string()).is_ok());
+    }
+
+    #[test]
+    fn ssh_terminal_tab_open_rejects_disabled_sftp() {
+        let registry = TerminalSessionRegistry::default();
+        insert_test_ssh_session(
+            &registry,
+            "ssh-1",
+            "/tmp/project",
+            false,
+            SSH_STATUS_CONNECTED,
+        );
+
+        let error = registry
+            .ssh_terminal_tab_open("ssh-1".to_string(), "sftp".to_string())
+            .expect_err("sftp tab should be rejected");
+
+        assert!(error.contains("SFTP is not enabled"));
+    }
+
+    #[test]
+    fn ssh_terminal_tabs_prune_when_session_closes() {
+        let registry = TerminalSessionRegistry::default();
+        insert_test_ssh_session(
+            &registry,
+            "ssh-1",
+            "/tmp/project",
+            true,
+            SSH_STATUS_CONNECTED,
+        );
+        registry
+            .ssh_terminal_tab_open("ssh-1".to_string(), "bash".to_string())
+            .expect("open bash tab");
+        registry
+            .ssh_terminal_tab_open("ssh-1".to_string(), "sftp".to_string())
+            .expect("open sftp tab");
+
+        registry
+            .close("ssh-1".to_string())
+            .expect("close ssh session");
+        let snapshot = registry
+            .ssh_terminal_tabs_list("/tmp/project".to_string())
+            .expect("list tabs");
+
+        assert!(snapshot.tabs.is_empty());
+    }
+
+    #[test]
+    fn ssh_terminal_tabs_prune_when_ssh_disconnects() {
+        let registry = TerminalSessionRegistry::default();
+        insert_test_ssh_session(
+            &registry,
+            "ssh-1",
+            "/tmp/project",
+            true,
+            SSH_STATUS_CONNECTED,
+        );
+        registry
+            .ssh_terminal_tab_open("ssh-1".to_string(), "bash".to_string())
+            .expect("open bash tab");
+        registry
+            .ssh_terminal_tab_open("ssh-1".to_string(), "sftp".to_string())
+            .expect("open sftp tab");
+        let entry = registry
+            .sessions
+            .lock()
+            .expect("terminal session registry poisoned")
+            .get("ssh-1")
+            .cloned()
+            .expect("ssh session entry");
+
+        registry.mark_ssh_disconnected(&entry);
+
+        let snapshot = registry
+            .ssh_terminal_tabs_list("/tmp/project".to_string())
+            .expect("list tabs");
+        assert!(snapshot.tabs.is_empty());
+        let error = registry
+            .ssh_terminal_tab_open("ssh-1".to_string(), "bash".to_string())
+            .expect_err("disconnected ssh tab should be rejected");
+        assert!(error.contains("disconnected"));
     }
 
     #[test]

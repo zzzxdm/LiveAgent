@@ -1,6 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type {
+  SshTerminalTab,
+  SshTerminalTabsSnapshot,
   TerminalClient,
   TerminalEvent,
   TerminalSession,
@@ -78,6 +80,18 @@ type RawTerminalListResponse = {
   sessions?: RawTerminalSession[];
 };
 
+type RawSshTerminalTab = Partial<SshTerminalTab> & {
+  session_id?: string;
+  project_path_key?: string;
+  created_at?: number;
+  updated_at?: number;
+};
+
+type RawSshTerminalTabsSnapshot = Partial<SshTerminalTabsSnapshot> & {
+  project_path_key?: string;
+  tabs?: RawSshTerminalTab[];
+};
+
 type RawTerminalShellOption = Partial<TerminalShellOption>;
 
 type RawTerminalShellOptionsResponse = {
@@ -93,6 +107,8 @@ type RawTerminalEvent = {
   projectPathKey?: string;
   project_path_key?: string;
   session?: RawTerminalSession;
+  sshTabs?: RawSshTerminalTabsSnapshot | null;
+  ssh_tabs?: RawSshTerminalTabsSnapshot | null;
   data?: string | null;
   outputStartOffset?: number;
   output_start_offset?: number;
@@ -207,21 +223,46 @@ function normalizeShellOptions(input: RawTerminalShellOptionsResponse): Terminal
   };
 }
 
+function normalizeSshTerminalTab(input: RawSshTerminalTab): SshTerminalTab {
+  const kind = input.kind === "sftp" ? "sftp" : "bash";
+  return {
+    id: input.id ?? "",
+    sessionId: input.sessionId ?? input.session_id ?? "",
+    projectPathKey: input.projectPathKey ?? input.project_path_key ?? "",
+    kind,
+    createdAt: Number(input.createdAt ?? input.created_at ?? 0),
+    updatedAt: Number(input.updatedAt ?? input.updated_at ?? 0),
+  };
+}
+
+function normalizeSshTerminalTabsSnapshot(
+  input: RawSshTerminalTabsSnapshot | null | undefined,
+): SshTerminalTabsSnapshot {
+  return {
+    projectPathKey: input?.projectPathKey ?? input?.project_path_key ?? "",
+    tabs: (input?.tabs ?? []).map(normalizeSshTerminalTab).filter((tab) => tab.id && tab.sessionId),
+    revision: Number(input?.revision ?? 0),
+  };
+}
+
 function normalizeEvent(input: RawTerminalEvent): TerminalEvent | null {
-  if (!input.session) return null;
-  const session = normalizeSession(input.session);
+  const sshTabs = normalizeSshTerminalTabsSnapshot(input.sshTabs ?? input.ssh_tabs);
+  if (!input.session && !input.sshTabs && !input.ssh_tabs) return null;
+  const session = input.session ? normalizeSession(input.session) : undefined;
   const outputStartOffset = normalizeOptionalOffset(
     input.outputStartOffset ?? input.output_start_offset,
   );
   const outputEndOffset = normalizeOptionalOffset(input.outputEndOffset ?? input.output_end_offset);
   return {
     kind: input.kind ?? "",
-    sessionId: input.sessionId ?? input.session_id ?? session.id,
-    projectPathKey: input.projectPathKey ?? input.project_path_key ?? session.projectPathKey,
+    sessionId: input.sessionId ?? input.session_id ?? session?.id,
+    projectPathKey:
+      input.projectPathKey ?? input.project_path_key ?? session?.projectPathKey ?? sshTabs.projectPathKey,
     session,
     data: input.data ?? undefined,
     outputStartOffset,
     outputEndOffset,
+    sshTabs: input.sshTabs || input.ssh_tabs ? sshTabs : undefined,
   };
 }
 
@@ -286,6 +327,28 @@ export const tauriTerminalClient: TerminalClient = {
     return normalizeSshLatency(
       await invoke<RawTerminalSshLatency>("terminal_ssh_latency", {
         session_id: sessionId,
+      }),
+    );
+  },
+  async listSshTerminalTabs(projectPathKey) {
+    return normalizeSshTerminalTabsSnapshot(
+      await invoke<RawSshTerminalTabsSnapshot>("ssh_terminal_tabs_list", {
+        project_path_key: projectPathKey,
+      }),
+    );
+  },
+  async openSshTerminalTab(params) {
+    return normalizeSshTerminalTabsSnapshot(
+      await invoke<RawSshTerminalTabsSnapshot>("ssh_terminal_tab_open", {
+        session_id: params.sessionId,
+        kind: params.kind,
+      }),
+    );
+  },
+  async closeSshTerminalTab(tabId) {
+    return normalizeSshTerminalTabsSnapshot(
+      await invoke<RawSshTerminalTabsSnapshot>("ssh_terminal_tab_close", {
+        tab_id: tabId,
       }),
     );
   },

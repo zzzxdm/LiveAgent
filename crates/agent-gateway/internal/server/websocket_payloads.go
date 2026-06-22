@@ -246,6 +246,37 @@ func websocketTerminalShellOptionPayload(option *gatewayv1.TerminalShellOption) 
 	return payload
 }
 
+func websocketTerminalSshTabPayload(tab *gatewayv1.TerminalSshTab) map[string]any {
+	if tab == nil {
+		return nil
+	}
+	return map[string]any{
+		"id":               strings.TrimSpace(tab.GetId()),
+		"session_id":       strings.TrimSpace(tab.GetSessionId()),
+		"project_path_key": strings.TrimSpace(tab.GetProjectPathKey()),
+		"kind":             strings.TrimSpace(tab.GetKind()),
+		"created_at":       tab.GetCreatedAt(),
+		"updated_at":       tab.GetUpdatedAt(),
+	}
+}
+
+func websocketTerminalSshTabsPayload(snapshot *gatewayv1.TerminalSshTabsSnapshot) map[string]any {
+	if snapshot == nil {
+		return nil
+	}
+	tabs := make([]map[string]any, 0, len(snapshot.GetTabs()))
+	for _, tab := range snapshot.GetTabs() {
+		if payload := websocketTerminalSshTabPayload(tab); payload != nil {
+			tabs = append(tabs, payload)
+		}
+	}
+	return map[string]any{
+		"project_path_key": strings.TrimSpace(snapshot.GetProjectPathKey()),
+		"tabs":             tabs,
+		"revision":         snapshot.GetRevision(),
+	}
+}
+
 func websocketTerminalResponsePayload(resp *gatewayv1.TerminalResponse) map[string]any {
 	sessions := make([]map[string]any, 0, len(resp.GetSessions()))
 	for _, session := range resp.GetSessions() {
@@ -291,6 +322,9 @@ func websocketTerminalResponsePayload(resp *gatewayv1.TerminalResponse) map[stri
 			"answer_echo":        prompt.GetAnswerEcho(),
 		}
 	}
+	if sshTabs := websocketTerminalSshTabsPayload(resp.GetSshTabs()); sshTabs != nil {
+		payload["ssh_tabs"] = sshTabs
+	}
 	return payload
 }
 
@@ -307,6 +341,9 @@ func websocketTerminalEventPayload(event *gatewayv1.TerminalEvent) map[string]an
 	}
 	if session := websocketTerminalSessionPayload(event.GetSession()); session != nil {
 		payload["session"] = session
+	}
+	if sshTabs := websocketTerminalSshTabsPayload(event.GetSshTabs()); sshTabs != nil {
+		payload["ssh_tabs"] = sshTabs
 	}
 	return payload
 }

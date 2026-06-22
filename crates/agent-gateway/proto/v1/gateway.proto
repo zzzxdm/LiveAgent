@@ -264,6 +264,8 @@ message TerminalRequest {
   string prompt_answer = 13;
   bool trust_host_key = 14;
   bool sftp_enabled = 15;
+  string tab_id = 16;
+  string tab_kind = 17;
 }
 
 message TerminalSession {
@@ -368,6 +370,22 @@ message TerminalShellOption {
   string command = 3;
 }
 
+message TerminalSshTab {
+  string id = 1;
+  string session_id = 2;
+  string project_path_key = 3;
+  string kind = 4;
+  uint64 created_at = 5;
+  uint64 updated_at = 6;
+}
+
+message TerminalSshTabsSnapshot {
+  reserved 3;
+  string project_path_key = 1;
+  repeated TerminalSshTab tabs = 2;
+  uint64 revision = 4;
+}
+
 message TerminalResponse {
   string action = 1;
   repeated TerminalSession sessions = 2;
@@ -380,6 +398,7 @@ message TerminalResponse {
   uint64 output_end_offset = 9;
   TerminalSshPrompt ssh_prompt = 10;
   uint32 latency_ms = 11;
+  TerminalSshTabsSnapshot ssh_tabs = 12;
 }
 
 message TerminalEvent {
@@ -390,6 +409,7 @@ message TerminalEvent {
   string data = 5;
   uint64 output_start_offset = 6;
   uint64 output_end_offset = 7;
+  TerminalSshTabsSnapshot ssh_tabs = 8;
 }
 
 message GitRequest {

@@ -34,8 +34,9 @@ use crate::runtime::sftp::{
     SftpStatResponse, SftpTransferResponse, SftpTransferState,
 };
 use crate::runtime::terminal::{
-    terminal_shell_options, TerminalEventPayload, TerminalSessionRecord, TerminalSessionRegistry,
-    TerminalShellOption, TerminalSnapshotResponse, TerminalSshCreateResponse,
+    terminal_shell_options, SshTerminalTabRecord, SshTerminalTabsSnapshot, TerminalEventPayload,
+    TerminalSessionRecord, TerminalSessionRegistry, TerminalShellOption, TerminalSnapshotResponse,
+    TerminalSshCreateResponse,
 };
 use crate::services::cron::CronManager;
 use crate::services::gateway_bridge;
@@ -1687,6 +1688,7 @@ impl GatewayController {
                     output_end_offset: 0,
                     ssh_prompt: None,
                     latency_ms: 0,
+                    ssh_tabs: None,
                 })
             }
             "list" => {
@@ -1719,6 +1721,7 @@ impl GatewayController {
                     output_end_offset: 0,
                     ssh_prompt: None,
                     latency_ms: 0,
+                    ssh_tabs: None,
                 })
             }
             "create" => {
@@ -1785,6 +1788,7 @@ impl GatewayController {
                     output_end_offset: 0,
                     ssh_prompt: None,
                     latency_ms: latency.latency_ms,
+                    ssh_tabs: None,
                 })
             }
             "cancel_ssh_prompt" => {
@@ -1802,7 +1806,28 @@ impl GatewayController {
                     output_end_offset: 0,
                     ssh_prompt: None,
                     latency_ms: 0,
+                    ssh_tabs: None,
                 })
+            }
+            "ssh_tabs_list" => {
+                let project_path_key =
+                    required_terminal_project_path_key(&request.project_path_key)?;
+                let snapshot = self
+                    .terminal_registry
+                    .ssh_terminal_tabs_list(project_path_key)?;
+                Ok(terminal_ssh_tabs_response_to_proto(action, snapshot))
+            }
+            "ssh_tab_open" => {
+                let snapshot = self
+                    .terminal_registry
+                    .ssh_terminal_tab_open(request.session_id, request.tab_kind)?;
+                Ok(terminal_ssh_tabs_response_to_proto(action, snapshot))
+            }
+            "ssh_tab_close" => {
+                let snapshot = self
+                    .terminal_registry
+                    .ssh_terminal_tab_close(request.tab_id)?;
+                Ok(terminal_ssh_tabs_response_to_proto(action, snapshot))
             }
             "attach" | "snapshot" => {
                 self.ensure_terminal_session_in_project(
@@ -1890,6 +1915,7 @@ impl GatewayController {
                 output_end_offset: 0,
                 ssh_prompt: None,
                 latency_ms: 0,
+                ssh_tabs: None,
             }),
             "" => Err("terminal action is required".to_string()),
             other => Err(format!("unsupported terminal action: {other}")),
@@ -1918,7 +1944,8 @@ impl GatewayController {
     ) -> Result<(), String> {
         let config = self.config_tx.borrow().clone();
         match action {
-            "create_ssh" | "answer_ssh_prompt" | "cancel_ssh_prompt" => {
+            "create_ssh" | "answer_ssh_prompt" | "cancel_ssh_prompt" | "ssh_tabs_list"
+            | "ssh_tab_open" | "ssh_tab_close" => {
                 if config.enable_web_ssh_terminal {
                     Ok(())
                 } else {
@@ -2048,10 +2075,11 @@ impl GatewayController {
                 kind: "created".to_string(),
                 session_id: session.id.clone(),
                 project_path_key: session.project_path_key.clone(),
-                session,
+                session: Some(session),
                 data: None,
                 output_start_offset: None,
                 output_end_offset: None,
+                ssh_tabs: None,
             }))
             .await?;
         }
@@ -4097,6 +4125,7 @@ fn terminal_list_response_to_proto(
         output_end_offset: 0,
         ssh_prompt: None,
         latency_ms: 0,
+        ssh_tabs: None,
     }
 }
 
@@ -4116,6 +4145,7 @@ fn terminal_record_response_to_proto(
         output_end_offset: 0,
         ssh_prompt: None,
         latency_ms: 0,
+        ssh_tabs: None,
     }
 }
 
@@ -4135,6 +4165,7 @@ fn terminal_snapshot_response_to_proto(
         output_end_offset: snapshot.output_end_offset,
         ssh_prompt: None,
         latency_ms: 0,
+        ssh_tabs: None,
     }
 }
 
@@ -4165,6 +4196,50 @@ fn terminal_ssh_create_response_to_proto(
             answer_echo: prompt.answer_echo,
         }),
         latency_ms: 0,
+        ssh_tabs: None,
+    }
+}
+
+fn terminal_ssh_tabs_response_to_proto(
+    action: String,
+    snapshot: SshTerminalTabsSnapshot,
+) -> proto::TerminalResponse {
+    proto::TerminalResponse {
+        action,
+        sessions: Vec::new(),
+        session: None,
+        output: String::new(),
+        truncated: false,
+        shell_options: Vec::new(),
+        default_shell: String::new(),
+        output_start_offset: 0,
+        output_end_offset: 0,
+        ssh_prompt: None,
+        latency_ms: 0,
+        ssh_tabs: Some(ssh_terminal_tabs_to_proto(snapshot)),
+    }
+}
+
+fn ssh_terminal_tab_to_proto(tab: SshTerminalTabRecord) -> proto::TerminalSshTab {
+    proto::TerminalSshTab {
+        id: tab.id,
+        session_id: tab.session_id,
+        project_path_key: normalize_project_path_key(&tab.project_path_key),
+        kind: tab.kind,
+        created_at: tab.created_at as u64,
+        updated_at: tab.updated_at as u64,
+    }
+}
+
+fn ssh_terminal_tabs_to_proto(snapshot: SshTerminalTabsSnapshot) -> proto::TerminalSshTabsSnapshot {
+    proto::TerminalSshTabsSnapshot {
+        project_path_key: normalize_project_path_key(&snapshot.project_path_key),
+        tabs: snapshot
+            .tabs
+            .into_iter()
+            .map(ssh_terminal_tab_to_proto)
+            .collect(),
+        revision: snapshot.revision,
     }
 }
 
@@ -4270,10 +4345,11 @@ fn build_terminal_event_envelope(payload: TerminalEventPayload) -> proto::AgentE
                 kind: payload.kind,
                 session_id: payload.session_id,
                 project_path_key: normalize_project_path_key(&payload.project_path_key),
-                session: Some(terminal_session_to_proto(payload.session)),
+                session: payload.session.map(terminal_session_to_proto),
                 data: payload.data.unwrap_or_default(),
                 output_start_offset: payload.output_start_offset.unwrap_or_default(),
                 output_end_offset: payload.output_end_offset.unwrap_or_default(),
+                ssh_tabs: payload.ssh_tabs.map(ssh_terminal_tabs_to_proto),
             },
         )),
     }

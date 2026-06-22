@@ -4764,6 +4764,7 @@ export function ChatPage(props: ChatPageProps) {
           >
             <WorkspaceSshTerminalOverlay
               openRequest={workspaceSshTerminalOpenRequest}
+              projectPathKey={terminalProjectPathKey}
               sessions={terminalSessions}
               client={tauriTerminalClient}
               sftpClient={tauriSftpClient}

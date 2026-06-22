@@ -29,6 +29,9 @@ func (c *websocketConnection) terminalEventAllowed(event *gatewayv1.TerminalEven
 	if event == nil {
 		return false
 	}
+	if strings.TrimSpace(event.GetKind()) == "ssh_tabs_updated" {
+		return c.sm.WebSshTerminalEnabled()
+	}
 	if session := event.GetSession(); session != nil {
 		return c.terminalSessionAllowed(session)
 	}
@@ -92,6 +95,8 @@ func (c *websocketConnection) handleTerminalRequest(req websocketRequest) {
 				PromptAnswer:   body.PromptAnswer,
 				TrustHostKey:   body.TrustHostKey,
 				SftpEnabled:    body.SftpEnabled,
+				TabId:          strings.TrimSpace(body.TabID),
+				TabKind:        strings.TrimSpace(body.TabKind),
 			},
 		},
 	})
@@ -202,7 +207,8 @@ func (c *websocketConnection) rememberTerminalInterest(action string, body webso
 
 func (c *websocketConnection) terminalRequestAllowed(action string, body websocketTerminalRequestPayload) bool {
 	switch action {
-	case "create_ssh", "answer_ssh_prompt", "cancel_ssh_prompt", "ssh_latency":
+	case "create_ssh", "answer_ssh_prompt", "cancel_ssh_prompt", "ssh_latency",
+		"ssh_tabs_list", "ssh_tab_open", "ssh_tab_close":
 		return c.sm.WebSshTerminalEnabled()
 	case "list":
 		return c.sm.WebTerminalEnabled() || c.sm.WebSshTerminalEnabled()
@@ -220,7 +226,8 @@ func (c *websocketConnection) terminalRequestAllowed(action string, body websock
 
 func terminalPermissionError(action string) string {
 	switch action {
-	case "create_ssh", "answer_ssh_prompt", "cancel_ssh_prompt", "ssh_latency":
+	case "create_ssh", "answer_ssh_prompt", "cancel_ssh_prompt", "ssh_latency",
+		"ssh_tabs_list", "ssh_tab_open", "ssh_tab_close":
 		return "web SSH terminal is disabled in desktop Remote settings"
 	default:
 		return "web terminal is disabled in desktop Remote settings"

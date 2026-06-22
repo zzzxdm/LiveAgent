@@ -92,7 +92,7 @@ function broadcast(client: ManagedClient, payload: Record<string, unknown>) {
 }
 
 function shouldPostTerminalEventToPort(state: PortState, event: TerminalEvent) {
-  const sessionID = event.sessionId.trim();
+  const sessionID = event.sessionId?.trim() ?? "";
   if (event.kind === "output") {
     return sessionID !== "" && state.terminalSessionIds.has(sessionID);
   }
@@ -567,6 +567,21 @@ async function resolveRequest(client: GatewayWebSocketClient, method: string, pa
         String(body.session_id ?? ""),
         String(body.project_path_key ?? ""),
       );
+    case "terminal.ssh_tabs_list":
+      return {
+        ssh_tabs: await client.listSshTerminalTabs(String(body.project_path_key ?? "")),
+      };
+    case "terminal.ssh_tab_open":
+      return {
+        ssh_tabs: await client.openSshTerminalTab({
+          sessionId: String(body.session_id ?? ""),
+          kind: body.tab_kind === "sftp" ? "sftp" : "bash",
+        }),
+      };
+    case "terminal.ssh_tab_close":
+      return {
+        ssh_tabs: await client.closeSshTerminalTab(String(body.tab_id ?? "")),
+      };
     case "terminal.attach":
       return client.snapshotTerminal(
         String(body.session_id ?? ""),

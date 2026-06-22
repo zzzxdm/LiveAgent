@@ -6,6 +6,9 @@ import type { HistoryMessageRef } from "@/lib/chat/conversationState";
 import type { PendingUploadedFile } from "@/lib/chat/uploadedFiles";
 
 import type {
+  SshTerminalTab,
+  SshTerminalTabKind,
+  SshTerminalTabsSnapshot,
   TerminalEvent,
   TerminalSession,
   TerminalShellOptions,
@@ -310,6 +313,8 @@ type RawTerminalResponse = {
   default_shell?: string;
   sshPrompt?: RawTerminalSshPrompt | null;
   ssh_prompt?: RawTerminalSshPrompt | null;
+  sshTabs?: RawSshTerminalTabsSnapshot | null;
+  ssh_tabs?: RawSshTerminalTabsSnapshot | null;
   latencyMs?: number;
   latency_ms?: number;
 };
@@ -321,11 +326,25 @@ type RawTerminalEvent = {
   projectPathKey?: string;
   project_path_key?: string;
   session?: RawTerminalSession;
+  sshTabs?: RawSshTerminalTabsSnapshot | null;
+  ssh_tabs?: RawSshTerminalTabsSnapshot | null;
   data?: string | null;
   outputStartOffset?: number;
   output_start_offset?: number;
   outputEndOffset?: number;
   output_end_offset?: number;
+};
+
+type RawSshTerminalTab = Partial<SshTerminalTab> & {
+  session_id?: string;
+  project_path_key?: string;
+  created_at?: number;
+  updated_at?: number;
+};
+
+type RawSshTerminalTabsSnapshot = Partial<SshTerminalTabsSnapshot> & {
+  project_path_key?: string;
+  tabs?: RawSshTerminalTab[];
 };
 
 type RawSftpEntry = Partial<SftpEntry> & {
@@ -1098,21 +1117,49 @@ function normalizeTerminalShellOptions(input: RawTerminalResponse): TerminalShel
   };
 }
 
+function normalizeSshTerminalTab(input: RawSshTerminalTab): SshTerminalTab {
+  const kind: SshTerminalTabKind = input.kind === "sftp" ? "sftp" : "bash";
+  return {
+    id: input.id ?? "",
+    sessionId: input.sessionId ?? input.session_id ?? "",
+    projectPathKey: input.projectPathKey ?? input.project_path_key ?? "",
+    kind,
+    createdAt: Number(input.createdAt ?? input.created_at ?? 0),
+    updatedAt: Number(input.updatedAt ?? input.updated_at ?? 0),
+  };
+}
+
+function normalizeSshTerminalTabsSnapshot(
+  input: RawSshTerminalTabsSnapshot | null | undefined,
+): SshTerminalTabsSnapshot {
+  return {
+    projectPathKey: input?.projectPathKey ?? input?.project_path_key ?? "",
+    tabs: (input?.tabs ?? []).map(normalizeSshTerminalTab).filter((tab) => tab.id && tab.sessionId),
+    revision: Number(input?.revision ?? 0),
+  };
+}
+
 function normalizeTerminalEvent(input: RawTerminalEvent): TerminalEvent | null {
-  if (!input.session) return null;
-  const session = normalizeTerminalSession(input.session);
+  const hasSshTabs = Boolean(input.sshTabs || input.ssh_tabs);
+  if (!input.session && !hasSshTabs) return null;
+  const session = input.session ? normalizeTerminalSession(input.session) : undefined;
+  const sshTabs = hasSshTabs
+    ? normalizeSshTerminalTabsSnapshot(input.sshTabs ?? input.ssh_tabs)
+    : undefined;
   const outputStartOffset = normalizeOptionalOffset(
     input.outputStartOffset ?? input.output_start_offset,
   );
   const outputEndOffset = normalizeOptionalOffset(input.outputEndOffset ?? input.output_end_offset);
   return {
     kind: input.kind ?? "",
-    sessionId: input.sessionId ?? input.session_id ?? session.id,
-    projectPathKey: input.projectPathKey ?? input.project_path_key ?? session.projectPathKey,
+    sessionId: input.sessionId ?? input.session_id ?? session?.id,
+    projectPathKey:
+      input.projectPathKey ?? input.project_path_key ?? session?.projectPathKey ?? sshTabs?.projectPathKey ?? "",
     session,
     data: input.data ?? undefined,
     outputStartOffset,
     outputEndOffset,
+    sshTabs,
   };
 }
 
@@ -1692,6 +1739,31 @@ export class GatewayWebSocketClient {
       }),
     );
     return { ...latency, sessionId };
+  }
+
+  async listSshTerminalTabs(projectPathKey: string): Promise<SshTerminalTabsSnapshot> {
+    const response = await this.requestWithRecovery<RawTerminalResponse>("terminal.ssh_tabs_list", {
+      project_path_key: projectPathKey,
+    });
+    return normalizeSshTerminalTabsSnapshot(response.sshTabs ?? response.ssh_tabs);
+  }
+
+  async openSshTerminalTab(params: {
+    sessionId: string;
+    kind: SshTerminalTabKind;
+  }): Promise<SshTerminalTabsSnapshot> {
+    const response = await this.request<RawTerminalResponse>("terminal.ssh_tab_open", {
+      session_id: params.sessionId,
+      tab_kind: params.kind,
+    });
+    return normalizeSshTerminalTabsSnapshot(response.sshTabs ?? response.ssh_tabs);
+  }
+
+  async closeSshTerminalTab(tabId: string): Promise<SshTerminalTabsSnapshot> {
+    const response = await this.request<RawTerminalResponse>("terminal.ssh_tab_close", {
+      tab_id: tabId,
+    });
+    return normalizeSshTerminalTabsSnapshot(response.sshTabs ?? response.ssh_tabs);
   }
 
   async snapshotTerminal(
@@ -2711,6 +2783,12 @@ export type GatewayWebSocketClientLike = {
   }): Promise<TerminalSshCreateResult>;
   cancelSshTerminalPrompt(promptId: string): Promise<void>;
   sshTerminalLatency(sessionId: string, projectPathKey?: string): Promise<TerminalSshLatency>;
+  listSshTerminalTabs(projectPathKey: string): Promise<SshTerminalTabsSnapshot>;
+  openSshTerminalTab(params: {
+    sessionId: string;
+    kind: SshTerminalTabKind;
+  }): Promise<SshTerminalTabsSnapshot>;
+  closeSshTerminalTab(tabId: string): Promise<SshTerminalTabsSnapshot>;
   snapshotTerminal(
     sessionId: string,
     maxBytes?: number,
@@ -3297,6 +3375,31 @@ class SharedWorkerGatewayWebSocketClient implements GatewayWebSocketClientLike {
       }),
     );
     return { ...latency, sessionId };
+  }
+
+  async listSshTerminalTabs(projectPathKey: string): Promise<SshTerminalTabsSnapshot> {
+    const response = await this.request<RawTerminalResponse>("terminal.ssh_tabs_list", {
+      project_path_key: projectPathKey,
+    });
+    return normalizeSshTerminalTabsSnapshot(response.sshTabs ?? response.ssh_tabs);
+  }
+
+  async openSshTerminalTab(params: {
+    sessionId: string;
+    kind: SshTerminalTabKind;
+  }): Promise<SshTerminalTabsSnapshot> {
+    const response = await this.request<RawTerminalResponse>("terminal.ssh_tab_open", {
+      session_id: params.sessionId,
+      tab_kind: params.kind,
+    });
+    return normalizeSshTerminalTabsSnapshot(response.sshTabs ?? response.ssh_tabs);
+  }
+
+  async closeSshTerminalTab(tabId: string): Promise<SshTerminalTabsSnapshot> {
+    const response = await this.request<RawTerminalResponse>("terminal.ssh_tab_close", {
+      tab_id: tabId,
+    });
+    return normalizeSshTerminalTabsSnapshot(response.sshTabs ?? response.ssh_tabs);
   }
 
   async snapshotTerminal(
