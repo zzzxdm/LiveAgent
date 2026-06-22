@@ -83,6 +83,11 @@ import { clearSilentMemoryDecisions } from "../lib/chat/memory/memoryDecisionLog
 import { clearMemoryExtractorState } from "../lib/chat/memory/memoryExtractor";
 import { buildMemoryOverviewSection } from "../lib/chat/memory/memoryPrompt";
 import {
+  escapeMarkdownReferenceLabel,
+  formatFileMentionToken,
+  formatMarkdownReferenceDestination,
+} from "../lib/chat/messages/mentionReferences";
+import {
   createUserMessageWithUploads,
   mergePendingUploadedFiles,
   type PendingUploadedFile,
@@ -336,24 +341,12 @@ function buildPastedTextFileName(paste: MentionComposerLargePaste, index: number
   return `${baseName || `pasted-text-${index + 1}`}.txt`;
 }
 
-function escapeComposerCommitLinkLabel(value: string) {
-  return value.replace(/\\/g, "\\\\").replace(/]/g, "\\]");
-}
-
-function formatComposerCommitLinkDestination(value: string) {
-  const normalized = value.replace(/\\/g, "/");
-  if (/[\s()<>]/.test(normalized)) {
-    return `<${normalized.replace(/</g, "%3C").replace(/>/g, "%3E")}>`;
-  }
-  return normalized;
-}
-
 function formatComposerCommitMention(commit: MentionComposerCommitMention) {
   const shortSha = commit.shortSha || commit.sha.slice(0, 7);
   const subject = commit.subject.trim() || shortSha;
   const label = `commit ${shortSha}: ${subject}`;
   if (commit.githubUrl?.trim()) {
-    return `[${escapeComposerCommitLinkLabel(label)}](${formatComposerCommitLinkDestination(commit.githubUrl.trim())})`;
+    return `[${escapeMarkdownReferenceLabel(label)}](${formatMarkdownReferenceDestination(commit.githubUrl.trim())})`;
   }
   return `${label} (${commit.sha})`;
 }
@@ -362,7 +355,7 @@ function formatComposerGitFileMention(file: MentionComposerGitFileMention) {
   const refLabel = file.refName || file.shortSha || file.commitSha.slice(0, 7);
   const label = `git file ${refLabel}: ${file.path}`;
   if (file.githubUrl?.trim()) {
-    return `[${escapeComposerCommitLinkLabel(label)}](${formatComposerCommitLinkDestination(file.githubUrl.trim())})`;
+    return `[${escapeMarkdownReferenceLabel(label)}](${formatMarkdownReferenceDestination(file.githubUrl.trim())})`;
   }
   return `${label} (${file.commitSha})`;
 }
@@ -375,6 +368,9 @@ function buildTextFromComposerDraft(
     .map((segment) => {
       if (segment.type === "text") {
         return segment.text;
+      }
+      if (segment.type === "fileMention") {
+        return formatFileMentionToken(segment.reference);
       }
       if (segment.type === "skillMention") {
         return `$${segment.skill.name}`;
