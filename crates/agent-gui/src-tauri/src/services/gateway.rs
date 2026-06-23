@@ -7,10 +7,10 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use futures_util::{SinkExt, StreamExt};
-use reqwest::header::{HeaderName, HeaderValue};
 use reqwest::Url;
+use reqwest::header::{HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tauri::Emitter;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio_stream::wrappers::ReceiverStream;
@@ -21,10 +21,10 @@ use uuid::Uuid;
 
 use crate::commands::chat_history::{self, ChatHistorySummary};
 use crate::commands::settings::{
-    apply_ssh_patch_with_conn, load_gateway_settings_sync_snapshot, load_remote_settings,
-    normalize_remote_settings_payload, open_db, redact_gateway_settings_sync_payload,
-    reset_runtime_ssh_known_host, RemoteSettingsPayload, PROVIDER_API_KEY_UPDATES_FIELD,
-    SSH_PATCH_FIELD, SSH_SECRET_UPDATES_FIELD,
+    PROVIDER_API_KEY_UPDATES_FIELD, RemoteSettingsPayload, SSH_PATCH_FIELD,
+    SSH_SECRET_UPDATES_FIELD, apply_ssh_patch_with_conn, load_gateway_settings_sync_snapshot,
+    load_remote_settings, normalize_remote_settings_payload, open_db,
+    redact_gateway_settings_sync_payload, reset_runtime_ssh_known_host,
 };
 use crate::runtime::project_path::{
     project_path_key as normalize_project_path_key, project_path_keys_equal,
@@ -34,9 +34,10 @@ use crate::runtime::sftp::{
     SftpStatResponse, SftpTransferResponse, SftpTransferState,
 };
 use crate::runtime::terminal::{
-    terminal_shell_options, SshTerminalTabRecord, SshTerminalTabsSnapshot, TerminalEventPayload,
-    TerminalSessionRecord, TerminalSessionRegistry, TerminalShellOption, TerminalSnapshotResponse,
+    SshTerminalTabRecord, SshTerminalTabsSnapshot, TerminalEventPayload, TerminalSessionRecord,
+    TerminalSessionRegistry, TerminalShellOption, TerminalSnapshotResponse,
     TerminalSshCreateResponse, TerminalStreamEventPayload, TerminalStreamSnapshotResponse,
+    terminal_shell_options,
 };
 use crate::services::cron::CronManager;
 use crate::services::gateway_bridge;
@@ -161,6 +162,10 @@ pub struct GatewayUploadedFileEvent {
 pub struct GatewayChatMessageRefEvent {
     pub segment_index: i32,
     pub message_index: i32,
+    pub segment_id: String,
+    pub message_id: String,
+    pub role: String,
+    pub content_hash: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -178,6 +183,15 @@ pub struct GatewayChatRequestEvent {
     pub workdir: String,
     pub selected_system_tools: Vec<String>,
     pub uploaded_files: Vec<GatewayUploadedFileEvent>,
+}
+
+fn is_complete_user_chat_message_ref(ref_value: &proto::ChatMessageRef) -> bool {
+    ref_value.segment_index >= 0
+        && ref_value.message_index >= 0
+        && !ref_value.segment_id.trim().is_empty()
+        && !ref_value.message_id.trim().is_empty()
+        && ref_value.role.trim() == "user"
+        && !ref_value.content_hash.trim().is_empty()
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1131,6 +1145,21 @@ impl GatewayController {
                             request_id,
                             timestamp: now_unix_seconds(),
                             payload: Some(proto::agent_envelope::Payload::HistoryGetResp(response)),
+                        })
+                        .await
+                    }
+                    Err(error) => self.send_error_response(request_id, 500, error).await,
+                }
+            }
+            Some(proto::gateway_envelope::Payload::HistoryPrefix(request)) => {
+                match gateway_bridge::handle_history_prefix(request).await {
+                    Ok(response) => {
+                        self.send_agent_envelope(proto::AgentEnvelope {
+                            request_id,
+                            timestamp: now_unix_seconds(),
+                            payload: Some(proto::agent_envelope::Payload::HistoryPrefixResp(
+                                response,
+                            )),
                         })
                         .await
                     }
@@ -2411,6 +2440,18 @@ impl GatewayController {
                         )
                         .await;
                 };
+                if !is_complete_user_chat_message_ref(&base_message_ref) {
+                    return self
+                        .send_gateway_chat_control_event_with_details(
+                            request_id,
+                            conversation_id,
+                            "failed",
+                            "invalid_chat_command".to_string(),
+                            "chat.edit_resend requires a complete stable base_message_ref"
+                                .to_string(),
+                        )
+                        .await;
+                }
                 if conversation_id.is_empty() {
                     return self
                         .send_gateway_chat_control_event_with_details(
@@ -2530,6 +2571,10 @@ impl GatewayController {
             base_message_ref.map(|base_message_ref| GatewayChatMessageRefEvent {
                 segment_index: base_message_ref.segment_index,
                 message_index: base_message_ref.message_index,
+                segment_id: base_message_ref.segment_id,
+                message_id: base_message_ref.message_id,
+                role: base_message_ref.role,
+                content_hash: base_message_ref.content_hash,
             });
         GatewayChatRequestEvent {
             request_id,
@@ -4803,17 +4848,16 @@ fn serialize_settings_sync_payload(payload: &Value) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_chat_event_envelope, build_endpoint, build_grpc_url,
-        build_local_settings_update_event_payload, build_tunnel_upstream_url,
-        format_gateway_terminal_stream_rpc_error, history_share_resolve_error_code,
-        merge_settings_sync_snapshot, normalize_tunnel_ttl, proto,
-        queue_terminal_stream_handshake_frame, required_terminal_project_path_key,
+        GATEWAY_CHAT_LEASE_MS, GATEWAY_CHAT_RUNNING_LEASE_MS, GatewayChatRequestEvent,
+        GatewayController, GatewayStatusSnapshot, RemoteChatInboxRecord, build_chat_event_envelope,
+        build_endpoint, build_grpc_url, build_local_settings_update_event_payload,
+        build_tunnel_upstream_url, format_gateway_terminal_stream_rpc_error,
+        history_share_resolve_error_code, merge_settings_sync_snapshot, normalize_tunnel_ttl,
+        proto, queue_terminal_stream_handshake_frame, required_terminal_project_path_key,
         set_disconnected_status, tunnel_expires_at, validate_tunnel_target_url,
-        GatewayChatRequestEvent, GatewayController, GatewayStatusSnapshot, RemoteChatInboxRecord,
-        GATEWAY_CHAT_LEASE_MS, GATEWAY_CHAT_RUNNING_LEASE_MS,
     };
     use crate::commands::settings::RemoteSettingsPayload;
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
     use std::time::{Duration, Instant};
 
     fn gateway_chat_request(
@@ -4876,6 +4920,10 @@ mod tests {
             Some(proto::ChatMessageRef {
                 segment_index: 2,
                 message_index: 4,
+                segment_id: "segment-c".to_string(),
+                message_id: "user-c".to_string(),
+                role: "user".to_string(),
+                content_hash: "fnv1a32:00000000".to_string(),
             }),
         );
 
@@ -4890,6 +4938,10 @@ mod tests {
             .expect("base message ref should be preserved");
         assert_eq!(base_message_ref.segment_index, 2);
         assert_eq!(base_message_ref.message_index, 4);
+        assert_eq!(base_message_ref.segment_id, "segment-c");
+        assert_eq!(base_message_ref.message_id, "user-c");
+        assert_eq!(base_message_ref.role, "user");
+        assert_eq!(base_message_ref.content_hash, "fnv1a32:00000000");
         assert_eq!(event.execution_mode, "tools");
         assert_eq!(event.workdir, "/workspace");
         assert_eq!(event.selected_system_tools, vec!["http_get_test"]);

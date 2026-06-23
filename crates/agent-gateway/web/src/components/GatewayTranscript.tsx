@@ -85,11 +85,6 @@ type GatewayTranscriptProps = {
     text: string,
     uploadedFiles: PendingUploadedFile[],
   ) => void;
-  onResolveUserMessageRef?: (
-    userOrdinal: number,
-    text: string,
-    uploadedFiles: PendingUploadedFile[],
-  ) => Promise<HistoryMessageRef | null>;
   readOnly?: boolean;
   redactToolContent?: boolean;
 };
@@ -744,11 +739,6 @@ const GatewayTranscriptHistory = memo(function GatewayTranscriptHistory(props: {
     text: string,
     uploadedFiles: PendingUploadedFile[],
   ) => void;
-  onResolveUserMessageRef?: (
-    userOrdinal: number,
-    text: string,
-    uploadedFiles: PendingUploadedFile[],
-  ) => Promise<HistoryMessageRef | null>;
   readOnly?: boolean;
   redactToolContent?: boolean;
 }) {
@@ -766,15 +756,12 @@ const GatewayTranscriptHistory = memo(function GatewayTranscriptHistory(props: {
     gitClient,
     onLoadUploadedImagePreview,
     onResendFromEdit,
-    onResolveUserMessageRef,
     readOnly = false,
     redactToolContent = false,
   } = props;
   const { locale, t } = useLocale();
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
-  const [resolvingEditMessageId, setResolvingEditMessageId] = useState<string | null>(null);
-  const [resolvedMessageRefs, setResolvedMessageRefs] = useState<Record<string, HistoryMessageRef>>({});
   const commitDetailsCacheRef = useRef(new Map<string, CommitDisplayReference>());
   const historyIdentityKey = `${conversationId ?? ""}\n${items[0]?.id ?? ""}`;
 
@@ -816,8 +803,6 @@ const GatewayTranscriptHistory = memo(function GatewayTranscriptHistory(props: {
 
   useEffect(() => {
     setEditingMessageId(null);
-    setResolvingEditMessageId(null);
-    setResolvedMessageRefs({});
     commitDetailsCacheRef.current.clear();
   }, [historyIdentityKey]);
 
@@ -896,13 +881,16 @@ const GatewayTranscriptHistory = memo(function GatewayTranscriptHistory(props: {
 
         const item = virtualItem.item;
         if (item.kind === "user") {
-          const userOrdinal = item.userOrdinal;
           const isCopied = copiedMessageId === item.id;
           const isEditing = editingMessageId === item.id;
-          const resolvedMessageRef = resolvedMessageRefs[item.id];
-          const effectiveMessageRef = item.messageRef ?? resolvedMessageRef;
-          const isResolvingEdit = resolvingEditMessageId === item.id;
-          const editDisabled = readOnly || isStreaming || isResolvingEdit || !onResendFromEdit;
+          const effectiveMessageRef = item.messageRef;
+          const missingStableRef = !effectiveMessageRef;
+          const editDisabled = readOnly || isStreaming || !onResendFromEdit || missingStableRef;
+          const editTitle = missingStableRef
+            ? locale === "en-US"
+              ? "This older message cannot be edited because it has no stable message identifier."
+              : "旧历史缺少稳定消息标识，无法编辑重发"
+            : t("chat.edit");
           const { visibleFiles, pastedTextFiles } = splitUserAttachmentsForDisplay(
             item.attachments,
             item.text,
@@ -970,38 +958,13 @@ const GatewayTranscriptHistory = memo(function GatewayTranscriptHistory(props: {
                       <button
                         type="button"
                         className="chat-user-bubble-action rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
-                        title={t("chat.edit")}
-                        aria-label={t("chat.edit")}
+                        title={editTitle}
+                        aria-label={editTitle}
                         disabled={editDisabled}
                         onClick={() => {
                           if (effectiveMessageRef) {
                             setEditingMessageId(item.id);
-                            return;
                           }
-                          if (!onResolveUserMessageRef) {
-                            return;
-                          }
-                          setResolvingEditMessageId(item.id);
-                          void onResolveUserMessageRef(
-                            userOrdinal,
-                            item.text,
-                            item.attachments,
-                          )
-                            .then((messageRef) => {
-                              if (!messageRef) {
-                                return;
-                              }
-                              setResolvedMessageRefs((current) => ({
-                                ...current,
-                                [item.id]: messageRef,
-                              }));
-                              setEditingMessageId(item.id);
-                            })
-                            .finally(() => {
-                              setResolvingEditMessageId((current) =>
-                                current === item.id ? null : current,
-                              );
-                            });
                         }}
                       >
                         <Pencil className="h-3.5 w-3.5" />
@@ -1246,7 +1209,6 @@ export function GatewayTranscript({
   gitClient,
   onLoadUploadedImagePreview,
   onResendFromEdit,
-  onResolveUserMessageRef,
   readOnly = false,
   redactToolContent = false,
 }: GatewayTranscriptProps) {
@@ -1361,7 +1323,6 @@ export function GatewayTranscript({
           gitClient={gitClient}
           onLoadUploadedImagePreview={onLoadUploadedImagePreview}
           onResendFromEdit={onResendFromEdit}
-          onResolveUserMessageRef={onResolveUserMessageRef}
           readOnly={readOnly}
           redactToolContent={redactToolContent}
         />

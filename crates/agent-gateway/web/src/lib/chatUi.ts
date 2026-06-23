@@ -230,17 +230,29 @@ function readHistoryMessageRef(value: unknown): HistoryMessageRef | undefined {
   const record = asRecord(value);
   const segmentIndex = readNumber(record.segmentIndex ?? record.segment_index);
   const messageIndex = readNumber(record.messageIndex ?? record.message_index);
+  const segmentId = readString(record.segmentId ?? record.segment_id)?.trim();
+  const messageId = readString(record.messageId ?? record.message_id)?.trim();
+  const role = readString(record.role)?.trim();
+  const contentHash = readString(record.contentHash ?? record.content_hash)?.trim();
   if (
     typeof segmentIndex !== "number" ||
     typeof messageIndex !== "number" ||
     segmentIndex < 0 ||
-    messageIndex < 0
+    messageIndex < 0 ||
+    !segmentId ||
+    !messageId ||
+    !role ||
+    !contentHash
   ) {
     return undefined;
   }
   return {
     segmentIndex: Math.floor(segmentIndex),
     messageIndex: Math.floor(messageIndex),
+    segmentId,
+    messageId,
+    role,
+    contentHash,
   };
 }
 
@@ -735,9 +747,7 @@ export function parseHistoryMessagesJson(raw: string): ChatEntry[] {
       const messageRef = readHistoryMessageRef(userRecord.liveAgentHistoryRef);
       if (text.trim() || attachments.length > 0) {
         entries.push({
-          id: messageRef
-            ? `user-${messageRef.segmentIndex}-${messageRef.messageIndex}`
-            : randomId("user"),
+          id: messageRef ? `user-${messageRef.messageId}` : randomId("user"),
           kind: "user",
           text,
           attachments,

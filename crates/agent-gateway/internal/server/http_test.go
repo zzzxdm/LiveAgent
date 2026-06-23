@@ -636,7 +636,7 @@ func TestChatEditResendRejectsNegativeBaseMessageRef(t *testing.T) {
 	req := httptest.NewRequest(
 		http.MethodPost,
 		"http://gateway.test/api/chat/commands",
-		strings.NewReader(`{"type":"chat.edit_resend","payload":{"message":"edited","conversation_id":"conversation-1","client_request_id":"client-edit-1","base_message_ref":{"segment_index":-1,"message_index":4}}}`),
+		strings.NewReader(`{"type":"chat.edit_resend","payload":{"message":"edited","conversation_id":"conversation-1","client_request_id":"client-edit-1","base_message_ref":{"segment_index":-1,"message_index":4,"segment_id":"segment-a","message_id":"user-a","role":"user","content_hash":"fnv1a32:00000000"}}}`),
 	)
 	req.Header.Set("Authorization", "Bearer dev-token")
 	req.Header.Set("Content-Type", "application/json")
@@ -949,7 +949,7 @@ func TestChatCommandSeqContinuesAcrossConversationRuns(t *testing.T) {
 	}
 	sm.MarkChatRunControl(firstRunID, "conversation-1", "completed", "", "")
 
-	second := postCommand(`{"type":"chat.edit_resend","payload":{"message":"edited","conversation_id":"conversation-1","client_request_id":"client-edit-1","base_message_ref":{"segment_index":0,"message_index":0}}}`)
+	second := postCommand(`{"type":"chat.edit_resend","payload":{"message":"edited","conversation_id":"conversation-1","client_request_id":"client-edit-1","base_message_ref":{"segment_index":0,"message_index":0,"segment_id":"segment-a","message_id":"user-a","role":"user","content_hash":"fnv1a32:00000000"}}}`)
 	secondRunID, _ := second["run_id"].(string)
 	if secondRunID == "" || secondRunID == firstRunID || second["accepted_seq"] != float64(4) {
 		t.Fatalf("second response = %#v, want new run accepted_seq 4", second)
@@ -1048,7 +1048,7 @@ func TestChatEditResendSendsSingleChatCommand(t *testing.T) {
 	req, err := http.NewRequest(
 		http.MethodPost,
 		ts.URL+"/api/chat/commands",
-		strings.NewReader(`{"type":"chat.edit_resend","payload":{"message":"edited","conversation_id":"conversation-1","client_request_id":"client-edit-1","base_message_ref":{"segment_index":2,"message_index":4}}}`),
+		strings.NewReader(`{"type":"chat.edit_resend","payload":{"message":"edited","conversation_id":"conversation-1","client_request_id":"client-edit-1","base_message_ref":{"segment_index":2,"message_index":4,"segment_id":"segment-c","message_id":"user-c","role":"user","content_hash":"fnv1a32:00000000"}}}`),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -1130,7 +1130,11 @@ func TestChatEditResendSendsSingleChatCommand(t *testing.T) {
 			chatReq.GetConversationId() != "conversation-1" ||
 			chatReq.GetClientRequestId() != "client-edit-1" ||
 			baseRef.GetSegmentIndex() != 2 ||
-			baseRef.GetMessageIndex() != 4 {
+			baseRef.GetMessageIndex() != 4 ||
+			baseRef.GetSegmentId() != "segment-c" ||
+			baseRef.GetMessageId() != "user-c" ||
+			baseRef.GetRole() != "user" ||
+			baseRef.GetContentHash() != "fnv1a32:00000000" {
 			t.Fatalf("chat command id=%q command=%#v", outbound.GetRequestId(), command)
 		}
 	case <-time.After(time.Second):

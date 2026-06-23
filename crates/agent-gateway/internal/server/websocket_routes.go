@@ -20,6 +20,7 @@ var websocketRequestHandlers = map[string]websocketRequestHandler{
 	"history.workdirs":               (*websocketConnection).handleHistoryWorkdirs,
 	"history.shared_list":            (*websocketConnection).handleHistorySharedList,
 	"history.get":                    (*websocketConnection).handleHistoryGet,
+	"history.prefix":                 (*websocketConnection).handleHistoryPrefix,
 	"history.rename":                 (*websocketConnection).handleHistoryRename,
 	"history.pin":                    (*websocketConnection).handleHistoryPin,
 	"history.share.get":              (*websocketConnection).handleHistoryShareGet,

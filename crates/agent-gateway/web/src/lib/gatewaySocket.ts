@@ -536,12 +536,20 @@ function buildChatCommandPayload(input: GatewayChatCommandInput) {
           }
         : undefined,
       base_message_ref: input.baseMessageRef
-        ? {
-            segment_index: input.baseMessageRef.segmentIndex,
-            message_index: input.baseMessageRef.messageIndex,
-          }
+        ? buildHistoryMessageRefPayload(input.baseMessageRef)
         : undefined,
     },
+  };
+}
+
+function buildHistoryMessageRefPayload(ref: HistoryMessageRef) {
+  return {
+    segment_index: ref.segmentIndex,
+    message_index: ref.messageIndex,
+    segment_id: ref.segmentId,
+    message_id: ref.messageId,
+    role: ref.role,
+    content_hash: ref.contentHash,
   };
 }
 
@@ -1919,6 +1927,18 @@ export class GatewayWebSocketClient {
     });
   }
 
+  async getHistoryPrefix(
+    conversationId: string,
+    baseMessageRef: HistoryMessageRef,
+    options?: HistoryGetOptions,
+  ): Promise<HistoryDetail> {
+    return this.requestWithRecovery<HistoryDetail>("history.prefix", {
+      conversation_id: conversationId,
+      max_messages: options?.maxMessages,
+      base_message_ref: buildHistoryMessageRefPayload(baseMessageRef),
+    });
+  }
+
   async renameHistory(conversationId: string, title: string): Promise<ConversationSummary> {
     return this.request<ConversationSummary>("history.rename", {
       conversation_id: conversationId,
@@ -2793,6 +2813,11 @@ export type GatewayWebSocketClientLike = {
   listHistoryWorkdirs(): Promise<HistoryWorkdirsResponse>;
   listSharedHistory(page: number, pageSize: number): Promise<HistoryList>;
   getHistory(conversationId: string, options?: HistoryGetOptions): Promise<HistoryDetail>;
+  getHistoryPrefix(
+    conversationId: string,
+    baseMessageRef: HistoryMessageRef,
+    options?: HistoryGetOptions,
+  ): Promise<HistoryDetail>;
   renameHistory(conversationId: string, title: string): Promise<ConversationSummary>;
   pinHistory(conversationId: string, isPinned: boolean): Promise<ConversationSummary>;
   getHistoryShare(conversationId: string): Promise<HistoryShareStatus>;
@@ -3855,6 +3880,18 @@ class SharedWorkerGatewayWebSocketClient implements GatewayWebSocketClientLike {
     return this.request<HistoryDetail>("history.get", {
       conversation_id: conversationId,
       max_messages: options?.maxMessages,
+    });
+  }
+
+  async getHistoryPrefix(
+    conversationId: string,
+    baseMessageRef: HistoryMessageRef,
+    options?: HistoryGetOptions,
+  ): Promise<HistoryDetail> {
+    return this.request<HistoryDetail>("history.prefix", {
+      conversation_id: conversationId,
+      max_messages: options?.maxMessages,
+      base_message_ref: buildHistoryMessageRefPayload(baseMessageRef),
     });
   }
 

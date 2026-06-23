@@ -76,7 +76,14 @@ function normalizeGatewayBaseMessageRef(value: unknown): HistoryMessageRef | und
   if (!value || typeof value !== "object") {
     return undefined;
   }
-  const candidate = value as { segmentIndex?: unknown; messageIndex?: unknown };
+  const candidate = value as {
+    segmentIndex?: unknown;
+    messageIndex?: unknown;
+    segmentId?: unknown;
+    messageId?: unknown;
+    role?: unknown;
+    contentHash?: unknown;
+  };
   const segmentIndex =
     typeof candidate.segmentIndex === "number" && Number.isFinite(candidate.segmentIndex)
       ? Math.trunc(candidate.segmentIndex)
@@ -85,10 +92,22 @@ function normalizeGatewayBaseMessageRef(value: unknown): HistoryMessageRef | und
     typeof candidate.messageIndex === "number" && Number.isFinite(candidate.messageIndex)
       ? Math.trunc(candidate.messageIndex)
       : -1;
-  if (segmentIndex < 0 || messageIndex < 0) {
+  const segmentId = typeof candidate.segmentId === "string" ? candidate.segmentId.trim() : "";
+  const messageId = typeof candidate.messageId === "string" ? candidate.messageId.trim() : "";
+  const role = typeof candidate.role === "string" ? candidate.role.trim() : "";
+  const contentHash =
+    typeof candidate.contentHash === "string" ? candidate.contentHash.trim() : "";
+  if (
+    segmentIndex < 0 ||
+    messageIndex < 0 ||
+    !segmentId ||
+    !messageId ||
+    role !== "user" ||
+    !contentHash
+  ) {
     return undefined;
   }
-  return { segmentIndex, messageIndex };
+  return { segmentIndex, messageIndex, segmentId, messageId, role, contentHash };
 }
 
 export function useGatewayBridgeListeners(params: UseGatewayBridgeListenersParams) {

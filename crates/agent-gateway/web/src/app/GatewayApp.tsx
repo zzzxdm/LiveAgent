@@ -198,7 +198,6 @@ import { WorkspaceOverlayHost } from "./WorkspaceOverlayHost";
 import {
   createConversationRuntimeEntry,
   createWorkspaceProjectFromPath,
-  findUserMessageRefByOrdinal,
   formatTranslation,
   getDefaultWorkspaceProjectPath,
   hasDetachedHistorySelection,
@@ -209,7 +208,6 @@ import {
   resolveVisibleConversationId,
   shouldOpenSidebarByDefault,
   toChatHistorySummary,
-  truncateChatEntriesFromMessageRef,
 } from "./historyUtils";
 import type {
   ConversationRuntimeEntry,
@@ -416,6 +414,10 @@ export default function GatewayApp() {
   const titlePositionLockedConversationIdsRef = useRef<Set<string>>(new Set());
   const titlePositionLockTimeoutsRef = useRef<Map<string, number>>(new Map());
   const blockedHistoryHydrationConversationIdsRef = useRef<Set<string>>(new Set());
+  const editResendGenerationRef = useRef(0);
+  const activeEditResendTransactionsRef = useRef<
+    Map<string, { generation: number; clientRequestId: string }>
+  >(new Map());
   const visibleHistorySnapshotRefreshSeqRef = useRef<Map<string, number>>(new Map());
   const restoredPageHistoryRefreshAtRef = useRef<Map<string, number>>(new Map());
   const historyLoadSequenceRef = useRef(0);
@@ -1102,9 +1104,19 @@ export default function GatewayApp() {
   );
 
   const refreshVisibleConversationHistorySnapshot = useCallback(
-    async (targetConversationId: string, currentApi = api, options?: { allowIdle?: boolean }) => {
+    async (
+      targetConversationId: string,
+      currentApi = api,
+      options?: { allowIdle?: boolean; allowDuringEditTransaction?: boolean },
+    ) => {
       const conversationIdValue = targetConversationId.trim();
       if (!currentApi || !conversationIdValue) {
+        return;
+      }
+      if (
+        options?.allowDuringEditTransaction !== true &&
+        activeEditResendTransactionsRef.current.has(conversationIdValue)
+      ) {
         return;
       }
 
@@ -3094,6 +3106,9 @@ export default function GatewayApp() {
       if (!currentApi || !conversationIdValue) {
         return false;
       }
+      if (activeEditResendTransactionsRef.current.has(conversationIdValue)) {
+        return false;
+      }
 
       const isStillVisible = () =>
         resolveVisibleConversationId(selectedHistoryIdRef.current, conversationIdRef.current) ===
@@ -3753,6 +3768,8 @@ export default function GatewayApp() {
           handleTunnelManagerChatEvent(event);
           if (terminalEvent) {
             terminalEventSeen = true;
+            clearRuntimeStartingStatusTimer();
+            clearConversationStreamingState(activeConversationId);
             markCompletedLiveStream(activeConversationId);
             commitTerminalConversationLiveStream(activeConversationId);
             refreshHistoryAfterCompletedLiveStream(activeConversationId, api);
@@ -3793,7 +3810,9 @@ export default function GatewayApp() {
           silent: true,
         });
       }
-      blockedHistoryHydrationConversationIdsRef.current.delete(activeConversationId);
+      if (!options?.editMessageRef) {
+        blockedHistoryHydrationConversationIdsRef.current.delete(activeConversationId);
+      }
       if (
         pendingDraftConversationMigrationRef.current?.draftConversationId === activeConversationId
       ) {
@@ -4812,25 +4831,6 @@ export default function GatewayApp() {
       });
   }
 
-  const resolveUserMessageRef = useCallback(
-    async (userOrdinal: number, text: string, uploadedFiles: PendingUploadedFile[]) => {
-      const activeConversationId = conversationIdRef.current.trim();
-      if (
-        !api ||
-        !activeConversationId ||
-        isLocalDraftConversationId(activeConversationId) ||
-        hasDetachedHistorySelection(selectedHistoryIdRef.current, activeConversationId)
-      ) {
-        return null;
-      }
-
-      const detail = await api.getHistory(activeConversationId);
-      const entries = await parseHistoryMessagesJsonAsync(detail.messages_json);
-      return findUserMessageRefByOrdinal(entries, userOrdinal, text, uploadedFiles);
-    },
-    [api],
-  );
-
   const handleResendFromEdit = useCallback(
     async (messageRef: HistoryMessageRef, text: string, uploadedFiles: PendingUploadedFile[]) => {
       const activeConversationId = conversationIdRef.current.trim();
@@ -4846,6 +4846,21 @@ export default function GatewayApp() {
       if (!normalized && uploadedFiles.length === 0) {
         return;
       }
+      const randomPart =
+        typeof globalThis.crypto?.randomUUID === "function"
+          ? globalThis.crypto.randomUUID()
+          : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+      const clientRequestId = `webui-chat.edit_resend-${activeConversationId}-${randomPart}`;
+      const generation = editResendGenerationRef.current + 1;
+      editResendGenerationRef.current = generation;
+      activeEditResendTransactionsRef.current.set(activeConversationId, {
+        generation,
+        clientRequestId,
+      });
+      const isCurrentEditTransaction = () => {
+        const current = activeEditResendTransactionsRef.current.get(activeConversationId);
+        return current?.generation === generation && current.clientRequestId === clientRequestId;
+      };
 
       setHistoryError(null);
       setChatError(null);
@@ -4856,59 +4871,15 @@ export default function GatewayApp() {
       markVisibleConversationRevision();
 
       try {
-        const currentRuntime =
-          conversationIdRef.current.trim() === activeConversationId &&
-          (selectedHistoryIdRef.current.trim() === "" ||
-            selectedHistoryIdRef.current.trim() === activeConversationId)
-            ? buildVisibleRuntimeEntry()
-            : (conversationRuntimeCacheRef.current.get(activeConversationId) ??
-              buildVisibleRuntimeEntry());
-        const locallyTruncatedEntries = truncateChatEntriesFromMessageRef(
-          currentRuntime.messages,
-          messageRef,
-        );
-        const canUseLocalTruncate = locallyTruncatedEntries !== currentRuntime.messages;
-        let detail: HistoryDetail;
-        let entries: ChatEntry[];
-        if (canUseLocalTruncate) {
-          entries = locallyTruncatedEntries;
-          detail = {
-            conversation_id: activeConversationId,
-            messages_json: "",
-            total_message_count: entries.length,
-            returned_message_count: entries.length,
-            has_more: false,
-            conversation:
-              selectedHistoryRef.current?.conversation_id === activeConversationId
-                ? selectedHistoryRef.current.conversation
-                : (pickConversationSummary(historyItemsRef.current, activeConversationId) ??
-                  undefined),
-          };
-        } else {
-          const hydratedDetail = await api.getHistory(activeConversationId);
-          const hydratedEntries = await parseHistoryMessagesJsonAsync(
-            hydratedDetail.messages_json,
-          );
-          const hydratedTruncatedEntries = truncateChatEntriesFromMessageRef(
-            hydratedEntries,
-            messageRef,
-          );
-          entries =
-            hydratedTruncatedEntries === hydratedEntries
-              ? currentRuntime.messages
-              : hydratedTruncatedEntries;
-          detail = {
-            conversation_id: activeConversationId,
-            messages_json: "",
-            total_message_count: entries.length,
-            returned_message_count: entries.length,
-            has_more: false,
-            conversation:
-              hydratedDetail.conversation ??
-              selectedHistoryRef.current?.conversation ??
-              pickConversationSummary(historyItemsRef.current, activeConversationId) ??
-              undefined,
-          };
+        const detail = await api.getHistoryPrefix(activeConversationId, messageRef, {
+          maxMessages: HISTORY_DETAIL_INITIAL_MAX_MESSAGES,
+        });
+        if (!isCurrentEditTransaction()) {
+          return;
+        }
+        const entries = await parseHistoryMessagesJsonAsync(detail.messages_json);
+        if (!isCurrentEditTransaction()) {
+          return;
         }
         const nextRuntime = createConversationRuntimeEntry({
           messages: entries,
@@ -4936,21 +4907,30 @@ export default function GatewayApp() {
             conversationId: activeConversationId,
             uploadedFiles,
             editMessageRef: messageRef,
+            clientRequestId,
           }) ?? Promise.resolve();
-        blockedHistoryHydrationConversationIdsRef.current.delete(activeConversationId);
         await resendPromise;
+        if (isCurrentEditTransaction()) {
+          await refreshVisibleConversationHistorySnapshot(activeConversationId, api, {
+            allowIdle: true,
+            allowDuringEditTransaction: true,
+          });
+        }
       } catch (error) {
         setChatError(asErrorMessage(error, "回溯历史消息失败"));
       } finally {
-        blockedHistoryHydrationConversationIdsRef.current.delete(activeConversationId);
+        if (isCurrentEditTransaction()) {
+          activeEditResendTransactionsRef.current.delete(activeConversationId);
+          blockedHistoryHydrationConversationIdsRef.current.delete(activeConversationId);
+        }
       }
     },
     [
       api,
-      buildVisibleRuntimeEntry,
       clearConversationLiveStream,
       invalidateHistoryLoad,
       markVisibleConversationRevision,
+      refreshVisibleConversationHistorySnapshot,
       syncVisibleConversationRuntime,
       updateHistoryItems,
     ],
@@ -6039,9 +6019,6 @@ export default function GatewayApp() {
                         gitClient={gitClient}
                         onLoadUploadedImagePreview={handleLoadUploadedImagePreview}
                         onResendFromEdit={hasDetachedSelection ? undefined : handleResendFromEdit}
-                        onResolveUserMessageRef={
-                          hasDetachedSelection ? undefined : resolveUserMessageRef
-                        }
                       />
                     </ScrollArea>
                     {historySwitchOverlay ? (

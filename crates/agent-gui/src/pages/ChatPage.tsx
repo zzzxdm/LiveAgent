@@ -2643,10 +2643,6 @@ export function ChatPage(props: ChatPageProps) {
     if (!sourceEntry) {
       throw new Error(`Conversation is not available for edit_resend: ${targetConversationId}`);
     }
-    if (!sourceEntry.state.segments[baseMessageRef.segmentIndex]) {
-      throw new Error("Remote edit_resend base_message_ref segment was not found.");
-    }
-
     const nextState = truncateConversationFromMessage(sourceEntry.state, baseMessageRef);
     const nextEntry = createConversationRuntimeEntry({
       ...sourceEntry,
