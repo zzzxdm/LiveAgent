@@ -36,6 +36,8 @@ import { BrowserGatewayTerminalStreamClient } from "@/lib/terminal/gatewayTermin
 
 import type {
   AgentStatus,
+  ChatQueueResponse,
+  ChatQueueSnapshot,
   ChatControlEvent,
   ChatEvent,
   ConversationSummary,
@@ -70,6 +72,7 @@ type GatewaySettingsUpdateResponse = {
 };
 type TerminalListener = (event: TerminalEvent) => void;
 type SftpTransferListener = (event: SftpTransferEvent) => void;
+type ChatQueueListener = (snapshot: ChatQueueSnapshot) => void;
 
 type PendingRequest = {
   resolve: (value: any) => void;
@@ -100,6 +103,7 @@ export type GatewayChatCommandInput = {
   clientRequestId?: string;
   runtimeControls?: GatewayChatRuntimeControls;
   baseMessageRef?: HistoryMessageRef;
+  queuePolicy?: "auto" | "append" | "interrupt";
 };
 
 type SkillListResponse = {
@@ -535,6 +539,7 @@ function buildChatCommandPayload(input: GatewayChatCommandInput) {
             reasoning: input.runtimeControls.reasoning,
           }
         : undefined,
+      queue_policy: input.queuePolicy ?? "auto",
       base_message_ref: input.baseMessageRef
         ? buildHistoryMessageRefPayload(input.baseMessageRef)
         : undefined,
@@ -558,6 +563,81 @@ type ChatCommandResponse = {
   conversation_id?: string;
   accepted_seq?: number;
 };
+
+type RawChatQueueResponse = {
+  accepted?: boolean;
+  message?: string;
+  snapshot_json?: string;
+  item_json?: string;
+  error_code?: string;
+  revision?: number;
+};
+
+type RawChatQueueEvent = {
+  conversation_id?: string;
+  snapshot_json?: string;
+  revision?: number;
+};
+
+function parseJsonPayload<T>(raw: string | undefined, fallback: T): T {
+  const text = raw?.trim() ?? "";
+  if (!text) return fallback;
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+function normalizeChatQueueResponse(input: RawChatQueueResponse): ChatQueueResponse {
+  const normalized = input as RawChatQueueResponse & Partial<ChatQueueResponse>;
+  return {
+    accepted: input.accepted === true,
+    message: input.message,
+    snapshot:
+      normalized.snapshot ??
+      parseJsonPayload<ChatQueueSnapshot | undefined>(input.snapshot_json, undefined),
+    item: normalized.item ?? parseJsonPayload(input.item_json, undefined),
+    errorCode: normalized.errorCode ?? input.error_code,
+    revision: input.revision,
+  };
+}
+
+function normalizeChatQueueSnapshot(
+  input: unknown,
+  fallbackConversationId?: string,
+  fallbackRevision?: number,
+): ChatQueueSnapshot | null {
+  if (!input || typeof input !== "object") return null;
+  const raw = input as Partial<ChatQueueSnapshot>;
+  const conversationId =
+    typeof raw.conversationId === "string" && raw.conversationId.trim()
+      ? raw.conversationId
+      : (fallbackConversationId ?? "");
+  if (!conversationId) return null;
+  const revision =
+    typeof raw.revision === "number" && Number.isFinite(raw.revision)
+      ? raw.revision
+      : (fallbackRevision ?? 0);
+  return {
+    conversationId,
+    revision,
+    items: Array.isArray(raw.items) ? raw.items : [],
+  };
+}
+
+function normalizeChatQueueEvent(
+  input: RawChatQueueEvent | ChatQueueSnapshot,
+): ChatQueueSnapshot | null {
+  const direct = normalizeChatQueueSnapshot(input);
+  if (direct) return direct;
+  const raw = input as RawChatQueueEvent;
+  return normalizeChatQueueSnapshot(
+    parseJsonPayload<ChatQueueSnapshot | null>(raw.snapshot_json, null),
+    raw.conversation_id,
+    raw.revision,
+  );
+}
 
 function parseChatSseBlock(block: string): ChatEvent | null {
   const dataLines: string[] = [];
@@ -697,6 +777,11 @@ async function* readChatEventStream(body: ReadableStream<Uint8Array>): AsyncGene
       yield event;
     }
   } finally {
+    try {
+      await reader.cancel();
+    } catch {
+      // The stream may already be closed by the server.
+    }
     reader.releaseLock();
   }
 }
@@ -784,6 +869,12 @@ async function* streamGatewayChatEvents(params: {
 
     try {
       for await (const event of readChatEventStream(response.body)) {
+        if (runId) {
+          const eventRunId = readChatEventRunId(event);
+          if (eventRunId && eventRunId !== runId) {
+            continue;
+          }
+        }
         const seq = readChatEventSeq(event);
         if (seq > 0 && seq <= lastSeq) {
           continue;
@@ -909,6 +1000,7 @@ function isChatControlEvent(
     case "delivered":
     case "claimed":
     case "starting":
+    case "queued_in_gui":
     case "started":
     case "progress":
     case "completed":
@@ -1333,6 +1425,7 @@ export class GatewayWebSocketClient {
   private settingsListeners = new Set<SettingsListener>();
   private terminalListeners = new Set<TerminalListener>();
   private sftpTransferListeners = new Set<SftpTransferListener>();
+  private chatQueueListeners = new Set<ChatQueueListener>();
   private terminalSessionSnapshot = new Map<string, TerminalSession>();
   private statusPollTimer: number | null = null;
   private lastStatus: AgentStatus | null = null;
@@ -1438,6 +1531,98 @@ export class GatewayWebSocketClient {
     };
   }
 
+  subscribeChatQueue(listener: ChatQueueListener): () => void {
+    this.chatQueueListeners.add(listener);
+    return () => {
+      this.chatQueueListeners.delete(listener);
+    };
+  }
+
+  async chatQueueGet(conversationId: string): Promise<ChatQueueResponse> {
+    return normalizeChatQueueResponse(
+      await this.requestWithRecovery<RawChatQueueResponse>("chat_queue.get", {
+        conversation_id: conversationId,
+      }),
+    );
+  }
+
+  async chatQueueGetItem(conversationId: string, itemId: string): Promise<ChatQueueResponse> {
+    return normalizeChatQueueResponse(
+      await this.requestWithRecovery<RawChatQueueResponse>("chat_queue.get_item", {
+        conversation_id: conversationId,
+        item_id: itemId,
+      }),
+    );
+  }
+
+  async chatQueueRunNow(conversationId: string, itemId: string): Promise<ChatQueueResponse> {
+    return normalizeChatQueueResponse(
+      await this.requestWithRecovery<RawChatQueueResponse>("chat_queue.run_now", {
+        conversation_id: conversationId,
+        item_id: itemId,
+      }),
+    );
+  }
+
+  async chatQueueMove(
+    conversationId: string,
+    itemId: string,
+    direction: "up" | "down",
+  ): Promise<ChatQueueResponse> {
+    return normalizeChatQueueResponse(
+      await this.requestWithRecovery<RawChatQueueResponse>("chat_queue.move", {
+        conversation_id: conversationId,
+        item_id: itemId,
+        direction,
+      }),
+    );
+  }
+
+  async chatQueueRemove(conversationId: string, itemId: string): Promise<ChatQueueResponse> {
+    return normalizeChatQueueResponse(
+      await this.requestWithRecovery<RawChatQueueResponse>("chat_queue.remove", {
+        conversation_id: conversationId,
+        item_id: itemId,
+      }),
+    );
+  }
+
+  async chatQueueEditBegin(conversationId: string, itemId: string): Promise<ChatQueueResponse> {
+    return normalizeChatQueueResponse(
+      await this.requestWithRecovery<RawChatQueueResponse>("chat_queue.edit_begin", {
+        conversation_id: conversationId,
+        item_id: itemId,
+      }),
+    );
+  }
+
+  async chatQueueEditCommit(input: {
+    conversationId: string;
+    itemId: string;
+    revision: number;
+    draftJson: string;
+    uploadedFilesJson: string;
+  }): Promise<ChatQueueResponse> {
+    return normalizeChatQueueResponse(
+      await this.requestWithRecovery<RawChatQueueResponse>("chat_queue.edit_commit", {
+        conversation_id: input.conversationId,
+        item_id: input.itemId,
+        revision: input.revision,
+        draft_json: input.draftJson,
+        uploaded_files_json: input.uploadedFilesJson,
+      }),
+    );
+  }
+
+  async chatQueueEditCancel(conversationId: string, itemId: string): Promise<ChatQueueResponse> {
+    return normalizeChatQueueResponse(
+      await this.requestWithRecovery<RawChatQueueResponse>("chat_queue.edit_cancel", {
+        conversation_id: conversationId,
+        item_id: itemId,
+      }),
+    );
+  }
+
   async *commandChat(input: GatewayChatCommandInput): AsyncGenerator<ChatEvent> {
     const signal = input.signal;
     if (signal?.aborted) {
@@ -1523,14 +1708,16 @@ export class GatewayWebSocketClient {
     }
   }
 
-  async cancelChat(conversationId: string): Promise<void> {
+  async cancelChat(conversationId: string, runId?: string): Promise<void> {
     const normalized = conversationId.trim();
     if (!normalized) {
       return;
     }
+    const normalizedRunId = runId?.trim() ?? "";
     await postGatewayChatCommand(this.token, {
       type: "chat.cancel",
       payload: {
+        run_id: normalizedRunId || undefined,
         conversation_id: normalized,
       },
     });
@@ -2586,6 +2773,14 @@ export class GatewayWebSocketClient {
       return;
     }
 
+    if (envelope.type === "chat_queue.event") {
+      const snapshot = normalizeChatQueueEvent(envelope.payload as RawChatQueueEvent);
+      if (snapshot) {
+        this.emitChatQueue(snapshot);
+      }
+      return;
+    }
+
     const pending = requestId ? this.pending.get(requestId) : null;
     if (!pending) {
       return;
@@ -2653,6 +2848,12 @@ export class GatewayWebSocketClient {
     this.lastInboundAt = Date.now();
   }
 
+  private emitChatQueue(snapshot: ChatQueueSnapshot) {
+    for (const listener of this.chatQueueListeners) {
+      listener(snapshot);
+    }
+  }
+
   private shouldRecycleAuthenticatedSocket(now = Date.now()) {
     if (
       this.socket === null ||
@@ -2705,12 +2906,31 @@ export type GatewayWebSocketClientLike = {
   subscribeSettings(listener: SettingsListener): () => void;
   subscribeTerminal(listener: TerminalListener): () => void;
   subscribeSftpTransfers(listener: SftpTransferListener): () => void;
+  subscribeChatQueue(listener: ChatQueueListener): () => void;
   commandChat(input: GatewayChatCommandInput): AsyncGenerator<ChatEvent>;
   streamChatEvents(
     conversationId: string,
     options?: ChatEventStreamOptions,
   ): AsyncGenerator<ChatEvent>;
-  cancelChat(conversationId: string): Promise<void>;
+  cancelChat(conversationId: string, runId?: string): Promise<void>;
+  chatQueueGet(conversationId: string): Promise<ChatQueueResponse>;
+  chatQueueGetItem(conversationId: string, itemId: string): Promise<ChatQueueResponse>;
+  chatQueueRunNow(conversationId: string, itemId: string): Promise<ChatQueueResponse>;
+  chatQueueMove(
+    conversationId: string,
+    itemId: string,
+    direction: "up" | "down",
+  ): Promise<ChatQueueResponse>;
+  chatQueueRemove(conversationId: string, itemId: string): Promise<ChatQueueResponse>;
+  chatQueueEditBegin(conversationId: string, itemId: string): Promise<ChatQueueResponse>;
+  chatQueueEditCommit(input: {
+    conversationId: string;
+    itemId: string;
+    revision: number;
+    draftJson: string;
+    uploadedFilesJson: string;
+  }): Promise<ChatQueueResponse>;
+  chatQueueEditCancel(conversationId: string, itemId: string): Promise<ChatQueueResponse>;
   cronManage(payload: CronManagePayload): Promise<CronManageResponse>;
   memoryManage<T = unknown>(payload: MemoryManagePayload): Promise<T>;
   gitRequest<T = unknown>(
@@ -2891,7 +3111,7 @@ type SharedWorkerClientResponseMessage = {
 type SharedWorkerClientEventMessage = {
   type: "event";
   connection_id: string;
-  event_type: "status" | "history" | "settings" | "terminal" | "sftp";
+  event_type: "status" | "history" | "settings" | "terminal" | "sftp" | "chat_queue";
   payload: unknown;
 };
 
@@ -3295,6 +3515,7 @@ class SharedWorkerGatewayWebSocketClient implements GatewayWebSocketClientLike {
   private settingsListeners = new Set<SettingsListener>();
   private terminalListeners = new Set<TerminalListener>();
   private sftpTransferListeners = new Set<SftpTransferListener>();
+  private chatQueueListeners = new Set<ChatQueueListener>();
   private terminalSessionSnapshot = new Map<string, TerminalSession>();
   private lastStatus: AgentStatus | null = null;
   private lastStatusError: string | null = null;
@@ -3400,6 +3621,98 @@ class SharedWorkerGatewayWebSocketClient implements GatewayWebSocketClientLike {
     };
   }
 
+  subscribeChatQueue(listener: ChatQueueListener): () => void {
+    this.chatQueueListeners.add(listener);
+    return () => {
+      this.chatQueueListeners.delete(listener);
+    };
+  }
+
+  async chatQueueGet(conversationId: string): Promise<ChatQueueResponse> {
+    return normalizeChatQueueResponse(
+      await this.request<RawChatQueueResponse>("chat_queue.get", {
+        conversation_id: conversationId,
+      }),
+    );
+  }
+
+  async chatQueueGetItem(conversationId: string, itemId: string): Promise<ChatQueueResponse> {
+    return normalizeChatQueueResponse(
+      await this.request<RawChatQueueResponse>("chat_queue.get_item", {
+        conversation_id: conversationId,
+        item_id: itemId,
+      }),
+    );
+  }
+
+  async chatQueueRunNow(conversationId: string, itemId: string): Promise<ChatQueueResponse> {
+    return normalizeChatQueueResponse(
+      await this.request<RawChatQueueResponse>("chat_queue.run_now", {
+        conversation_id: conversationId,
+        item_id: itemId,
+      }),
+    );
+  }
+
+  async chatQueueMove(
+    conversationId: string,
+    itemId: string,
+    direction: "up" | "down",
+  ): Promise<ChatQueueResponse> {
+    return normalizeChatQueueResponse(
+      await this.request<RawChatQueueResponse>("chat_queue.move", {
+        conversation_id: conversationId,
+        item_id: itemId,
+        direction,
+      }),
+    );
+  }
+
+  async chatQueueRemove(conversationId: string, itemId: string): Promise<ChatQueueResponse> {
+    return normalizeChatQueueResponse(
+      await this.request<RawChatQueueResponse>("chat_queue.remove", {
+        conversation_id: conversationId,
+        item_id: itemId,
+      }),
+    );
+  }
+
+  async chatQueueEditBegin(conversationId: string, itemId: string): Promise<ChatQueueResponse> {
+    return normalizeChatQueueResponse(
+      await this.request<RawChatQueueResponse>("chat_queue.edit_begin", {
+        conversation_id: conversationId,
+        item_id: itemId,
+      }),
+    );
+  }
+
+  async chatQueueEditCommit(input: {
+    conversationId: string;
+    itemId: string;
+    revision: number;
+    draftJson: string;
+    uploadedFilesJson: string;
+  }): Promise<ChatQueueResponse> {
+    return normalizeChatQueueResponse(
+      await this.request<RawChatQueueResponse>("chat_queue.edit_commit", {
+        conversation_id: input.conversationId,
+        item_id: input.itemId,
+        revision: input.revision,
+        draft_json: input.draftJson,
+        uploaded_files_json: input.uploadedFilesJson,
+      }),
+    );
+  }
+
+  async chatQueueEditCancel(conversationId: string, itemId: string): Promise<ChatQueueResponse> {
+    return normalizeChatQueueResponse(
+      await this.request<RawChatQueueResponse>("chat_queue.edit_cancel", {
+        conversation_id: conversationId,
+        item_id: itemId,
+      }),
+    );
+  }
+
   async *commandChat(input: GatewayChatCommandInput): AsyncGenerator<ChatEvent> {
     const signal = input.signal;
     if (signal?.aborted) {
@@ -3484,14 +3797,16 @@ class SharedWorkerGatewayWebSocketClient implements GatewayWebSocketClientLike {
     }
   }
 
-  async cancelChat(conversationId: string): Promise<void> {
+  async cancelChat(conversationId: string, runId?: string): Promise<void> {
     const normalized = conversationId.trim();
     if (!normalized) {
       return;
     }
+    const normalizedRunId = runId?.trim() ?? "";
     await postGatewayChatCommand(this.token, {
       type: "chat.cancel",
       payload: {
+        run_id: normalizedRunId || undefined,
         conversation_id: normalized,
       },
     });
@@ -4290,6 +4605,13 @@ class SharedWorkerGatewayWebSocketClient implements GatewayWebSocketClientLike {
         }
         return;
       }
+      case "chat_queue": {
+        const snapshot = normalizeChatQueueEvent(message.payload as RawChatQueueEvent);
+        if (snapshot) {
+          this.emitChatQueue(snapshot);
+        }
+        return;
+      }
     }
   }
 
@@ -4326,6 +4648,12 @@ class SharedWorkerGatewayWebSocketClient implements GatewayWebSocketClientLike {
   private emitSftpTransfer(event: SftpTransferEvent) {
     for (const listener of this.sftpTransferListeners) {
       listener(event);
+    }
+  }
+
+  private emitChatQueue(snapshot: ChatQueueSnapshot) {
+    for (const listener of this.chatQueueListeners) {
+      listener(snapshot);
     }
   }
 

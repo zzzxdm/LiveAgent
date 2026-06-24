@@ -68,6 +68,7 @@ message GatewayEnvelope {
     TunnelControlResponse tunnel_control_resp = 68;
     TunnelFrame tunnel_frame = 69;
     SettingsResetSshKnownHostRequest settings_reset_ssh_known_host = 72;
+    ChatQueueRequest chat_queue = 73;
   }
 }
 
@@ -117,6 +118,8 @@ message AgentEnvelope {
     FsReadWorkspaceImageResponse fs_read_workspace_image_resp = 66;
     SftpResponse sftp_response = 73;
     SftpEvent sftp_event = 74;
+    ChatQueueResponse chat_queue_resp = 75;
+    ChatQueueEvent chat_queue_event = 76;
     TunnelControlRequest tunnel_control = 67;
     TunnelControlResponse tunnel_control_resp = 68;
     TunnelFrame tunnel_frame = 69;
@@ -453,6 +456,7 @@ message ChatRequest {
   repeated ChatUploadedFile uploaded_files = 7;
   string client_request_id = 8;
   ChatRuntimeControls runtime_controls = 9;
+  string queue_policy = 10;
 }
 
 message ChatMessageRef {
@@ -475,6 +479,32 @@ message ChatCommandRequest {
   CancelChatRequest cancel = 4;
 }
 
+message ChatQueueRequest {
+  string action = 1;
+  string conversation_id = 2;
+  string item_id = 3;
+  string direction = 4;
+  uint64 revision = 5;
+  string draft_json = 6;
+  string uploaded_files_json = 7;
+  string request_json = 8;
+}
+
+message ChatQueueResponse {
+  bool accepted = 1;
+  string message = 2;
+  string snapshot_json = 3;
+  string item_json = 4;
+  string error_code = 5;
+  uint64 revision = 6;
+}
+
+message ChatQueueEvent {
+  string conversation_id = 1;
+  string snapshot_json = 2;
+  uint64 revision = 3;
+}
+
 message ChatEvent {
   ChatEventType type = 1;
   string conversation_id = 2;
@@ -489,6 +519,7 @@ message ChatEvent {
     ERROR = 5;
     TOOL_STATUS = 6;
     HOSTED_SEARCH = 7;
+    USER_MESSAGE = 8;
   }
 }
 

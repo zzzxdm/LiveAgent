@@ -791,6 +791,8 @@ func storedChatEventType(eventType gatewayv1.ChatEvent_ChatEventType) string {
 		return "tool_status"
 	case gatewayv1.ChatEvent_HOSTED_SEARCH:
 		return "hosted_search"
+	case gatewayv1.ChatEvent_USER_MESSAGE:
+		return "user_message"
 	default:
 		return "message"
 	}

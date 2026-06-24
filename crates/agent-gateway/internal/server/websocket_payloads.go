@@ -209,6 +209,14 @@ func websocketSettingsJSONPayload(raw string) (map[string]any, error) {
 	return payload, nil
 }
 
+func websocketChatQueueEventPayload(event *gatewayv1.ChatQueueEvent) map[string]any {
+	return map[string]any{
+		"conversation_id": strings.TrimSpace(event.GetConversationId()),
+		"snapshot_json":   strings.TrimSpace(event.GetSnapshotJson()),
+		"revision":        event.GetRevision(),
+	}
+}
+
 func websocketTerminalSessionPayload(session *gatewayv1.TerminalSession) map[string]any {
 	if session == nil {
 		return nil

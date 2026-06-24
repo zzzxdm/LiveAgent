@@ -650,6 +650,13 @@ function getManagedClient(token: string) {
       payload: event,
     });
   });
+  managed.client.subscribeChatQueue((snapshot) => {
+    broadcast(managed, {
+      type: "event",
+      event_type: "chat_queue",
+      payload: snapshot,
+    });
+  });
 
   clients.set(normalizedToken, managed);
   return managed;
@@ -791,6 +798,47 @@ async function resolveRequest(client: GatewayWebSocketClient, method: string, pa
     case "history.delete":
       await client.deleteHistory(String(body.conversation_id ?? ""));
       return undefined;
+    case "chat_queue.get":
+      return client.chatQueueGet(String(body.conversation_id ?? ""));
+    case "chat_queue.get_item":
+      return client.chatQueueGetItem(
+        String(body.conversation_id ?? ""),
+        String(body.item_id ?? ""),
+      );
+    case "chat_queue.run_now":
+      return client.chatQueueRunNow(
+        String(body.conversation_id ?? ""),
+        String(body.item_id ?? ""),
+      );
+    case "chat_queue.move":
+      return client.chatQueueMove(
+        String(body.conversation_id ?? ""),
+        String(body.item_id ?? ""),
+        body.direction === "down" ? "down" : "up",
+      );
+    case "chat_queue.remove":
+      return client.chatQueueRemove(
+        String(body.conversation_id ?? ""),
+        String(body.item_id ?? ""),
+      );
+    case "chat_queue.edit_begin":
+      return client.chatQueueEditBegin(
+        String(body.conversation_id ?? ""),
+        String(body.item_id ?? ""),
+      );
+    case "chat_queue.edit_commit":
+      return client.chatQueueEditCommit({
+        conversationId: String(body.conversation_id ?? ""),
+        itemId: String(body.item_id ?? ""),
+        revision: typeof body.revision === "number" ? body.revision : 0,
+        draftJson: String(body.draft_json ?? ""),
+        uploadedFilesJson: String(body.uploaded_files_json ?? ""),
+      });
+    case "chat_queue.edit_cancel":
+      return client.chatQueueEditCancel(
+        String(body.conversation_id ?? ""),
+        String(body.item_id ?? ""),
+      );
     case "providers.list":
       return client.listProviders();
     case "settings.get":

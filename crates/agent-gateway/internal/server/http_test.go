@@ -576,6 +576,11 @@ func TestChatCancelCommandFindsRunByConversation(t *testing.T) {
 	if _, created, err := sm.StartPendingChatCommandRun("run-1", "conversation-1", "client-1"); err != nil || !created {
 		t.Fatalf("StartPendingChatCommandRun created=%v err=%v", created, err)
 	}
+	sm.MarkChatRunControl("run-1", "conversation-1", "started", "", "")
+	startedSnapshot, ok := sm.ChatRunSnapshot("run-1", "conversation-1")
+	if !ok {
+		t.Fatal("expected started run snapshot")
+	}
 
 	handler := NewHTTPServer(&config.Config{
 		Token:                 "dev-token",
@@ -615,7 +620,7 @@ func TestChatCancelCommandFindsRunByConversation(t *testing.T) {
 		t.Fatalf("expected status %d, got %d body %s", http.StatusAccepted, rec.Code, rec.Body.String())
 	}
 
-	ch, _, cleanup, _, err := sm.SubscribeChatRun("run-1", "conversation-1", 0)
+	ch, _, cleanup, _, err := sm.SubscribeChatRun("run-1", "conversation-1", startedSnapshot.LatestSeq)
 	if err != nil {
 		t.Fatalf("SubscribeChatRun: %v", err)
 	}
@@ -627,6 +632,119 @@ func TestChatCancelCommandFindsRunByConversation(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for local cancelled event")
+	}
+}
+
+func TestChatCancelByConversationIgnoresDesktopQueuedRun(t *testing.T) {
+	sm := session.NewManager()
+	sm.RecordAuthentication("desktop-agent", "0.9.0", "session-1")
+	agentSession := session.NewAgentSession(sm.LatestAuthSnapshot())
+	sm.SetSession(agentSession)
+	if _, created, err := sm.StartPendingChatCommandRun("queued-run", "conversation-1", "client-queued"); err != nil || !created {
+		t.Fatalf("StartPendingChatCommandRun queued created=%v err=%v", created, err)
+	}
+	sm.MarkChatRunControl("queued-run", "conversation-1", "queued_in_gui", "", "")
+
+	handler := NewHTTPServer(&config.Config{
+		Token:                 "dev-token",
+		RequestTimeout:        time.Second,
+		WebSocketWriteTimeout: time.Second,
+	}, sm)
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"http://gateway.test/api/chat/commands",
+		strings.NewReader(`{"type":"chat.cancel","payload":{"conversation_id":"conversation-1"}}`),
+	)
+	req.Header.Set("Authorization", "Bearer dev-token")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-LiveAgent-CSRF", "1")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	select {
+	case outbound := <-agentSession.Outbound():
+		outbound.Ack(nil)
+		t.Fatalf("unexpected outbound cancel for desktop queued run: %#v", outbound)
+	default:
+	}
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected status %d, got %d body %s", http.StatusAccepted, rec.Code, rec.Body.String())
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &decoded); err != nil {
+		t.Fatalf("decode cancel response: %v", err)
+	}
+	if decoded["accepted"] != true || decoded["run_id"] != "" || decoded["conversation_id"] != "conversation-1" {
+		t.Fatalf("cancel response = %#v", decoded)
+	}
+	snapshot, ok := sm.ChatRunSnapshot("queued-run", "conversation-1")
+	if !ok || snapshot.State != session.ChatRunStateDesktopQueued {
+		t.Fatalf("queued snapshot = %#v ok=%v, want desktop queued", snapshot, ok)
+	}
+}
+
+func TestChatCancelByConversationUsesDesktopQueuedRunAfterHistoryRunning(t *testing.T) {
+	sm := session.NewManager()
+	sm.RecordAuthentication("desktop-agent", "0.9.0", "session-1")
+	agentSession := session.NewAgentSession(sm.LatestAuthSnapshot())
+	sm.SetSession(agentSession)
+	if _, created, err := sm.StartPendingChatCommandRun("queued-run", "conversation-1", "client-queued"); err != nil || !created {
+		t.Fatalf("StartPendingChatCommandRun queued created=%v err=%v", created, err)
+	}
+	sm.MarkChatRunControl("queued-run", "conversation-1", "queued_in_gui", "", "")
+	sm.DispatchFromAgent(&gatewayv1.AgentEnvelope{
+		RequestId: "history-running-1",
+		Payload: &gatewayv1.AgentEnvelope_HistorySync{
+			HistorySync: &gatewayv1.HistorySyncEvent{
+				Kind:           "running",
+				ConversationId: "conversation-1",
+				Conversation: &gatewayv1.ConversationSummary{
+					Id: "conversation-1",
+				},
+			},
+		},
+	})
+
+	handler := NewHTTPServer(&config.Config{
+		Token:                 "dev-token",
+		RequestTimeout:        time.Second,
+		WebSocketWriteTimeout: time.Second,
+	}, sm)
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"http://gateway.test/api/chat/commands",
+		strings.NewReader(`{"type":"chat.cancel","payload":{"conversation_id":"conversation-1"}}`),
+	)
+	req.Header.Set("Authorization", "Bearer dev-token")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-LiveAgent-CSRF", "1")
+	rec := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		handler.ServeHTTP(rec, req)
+		close(done)
+	}()
+
+	select {
+	case outbound := <-agentSession.Outbound():
+		outbound.Ack(nil)
+		if outbound.GetRequestId() != "queued-run" {
+			t.Fatalf("cancel request id = %q, want queued-run", outbound.GetRequestId())
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for cancel chat request")
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for cancel response")
+	}
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected status %d, got %d body %s", http.StatusAccepted, rec.Code, rec.Body.String())
+	}
+	snapshot, ok := sm.ChatRunSnapshot("queued-run", "conversation-1")
+	if !ok || snapshot.State != session.ChatRunStateCancelled {
+		t.Fatalf("queued snapshot = %#v ok=%v, want cancelled", snapshot, ok)
 	}
 }
 

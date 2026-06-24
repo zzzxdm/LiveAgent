@@ -115,7 +115,9 @@ func (m *Manager) ensureConversationChatRun(
 			run.workdir = workdir
 		}
 		run.conversationID = conversationID
-		m.chatStore.chatRunByConversation[conversationID] = requestID
+		if m.chatRunCanClaimConversationLocked(conversationID, requestID) {
+			m.chatStore.chatRunByConversation[conversationID] = requestID
+		}
 		run.applyState(ChatRunStateRunning)
 		run.updatedAt = now
 		return run.snapshot(), created, nil
@@ -274,7 +276,7 @@ func (m *Manager) startPendingChatCommandRun(
 	}
 	run.applyState(ChatRunStateQueued)
 	m.chatStore.chatRuns[requestID] = run
-	if conversationID != "" {
+	if conversationID != "" && m.chatRunCanClaimConversationLocked(conversationID, requestID) {
 		m.chatStore.chatRunByConversation[conversationID] = requestID
 	}
 	if clientRequestID != "" {
@@ -299,6 +301,27 @@ func (m *Manager) latestConversationSeqLocked(conversationID string) int64 {
 		}
 	}
 	return latestSeq
+}
+
+func (m *Manager) chatRunCanClaimConversationLocked(conversationID string, requestID string) bool {
+	conversationID = strings.TrimSpace(conversationID)
+	requestID = strings.TrimSpace(requestID)
+	if conversationID == "" || requestID == "" {
+		return false
+	}
+	currentRequestID := strings.TrimSpace(m.chatStore.chatRunByConversation[conversationID])
+	if currentRequestID == "" || currentRequestID == requestID {
+		return true
+	}
+	currentRun := m.chatStore.chatRuns[currentRequestID]
+	return currentRun == nil || currentRun.done
+}
+
+func chatRunControlCanClaimConversation(controlType string, state string) bool {
+	if normalizeChatRunState(state) == ChatRunStateRunning {
+		return true
+	}
+	return strings.TrimSpace(controlType) == "started"
 }
 
 func (m *Manager) upsertChatRunSnapshotLocked(
@@ -345,7 +368,7 @@ func (m *Manager) upsertChatRunSnapshotLocked(
 		}
 	}
 	m.chatStore.chatRuns[requestID] = run
-	if run.conversationID != "" {
+	if run.conversationID != "" && m.chatRunCanClaimConversationLocked(run.conversationID, requestID) {
 		m.chatStore.chatRunByConversation[run.conversationID] = requestID
 	}
 	if run.clientRequestID != "" {
@@ -370,7 +393,9 @@ func (m *Manager) applyChatRunSnapshotLocked(run *chatRun, snapshot ChatRunSnaps
 			}
 		}
 		run.conversationID = conversationID
-		m.chatStore.chatRunByConversation[conversationID] = requestID
+		if m.chatRunCanClaimConversationLocked(conversationID, requestID) {
+			m.chatStore.chatRunByConversation[conversationID] = requestID
+		}
 	}
 	if clientRequestID := strings.TrimSpace(snapshot.ClientRequestID); clientRequestID != "" {
 		run.clientRequestID = clientRequestID
@@ -473,7 +498,8 @@ func (m *Manager) ActiveChatRunSummaries() []ActiveChatRunSummary {
 			if summaries[index].Workdir == "" {
 				summaries[index].Workdir = summary.Workdir
 			}
-			if summary.UpdatedAt > summaries[index].UpdatedAt {
+			currentOwner := strings.TrimSpace(m.chatStore.chatRunByConversation[conversationID])
+			if shouldReplaceActiveChatRunSummary(summary, summaries[index], currentOwner) {
 				summaries[index].RequestID = summary.RequestID
 				summaries[index].FirstSeq = summary.FirstSeq
 				summaries[index].LatestSeq = summary.LatestSeq
@@ -518,6 +544,30 @@ func (m *Manager) ActiveChatRunSummaries() []ActiveChatRunSummary {
 		return summaries[i].ConversationID < summaries[j].ConversationID
 	})
 	return summaries
+}
+
+func shouldReplaceActiveChatRunSummary(candidate ActiveChatRunSummary, current ActiveChatRunSummary, currentOwner string) bool {
+	candidatePriority := activeChatRunSummaryPriority(candidate, currentOwner)
+	currentPriority := activeChatRunSummaryPriority(current, currentOwner)
+	if candidatePriority != currentPriority {
+		return candidatePriority > currentPriority
+	}
+	return candidate.UpdatedAt > current.UpdatedAt
+}
+
+func activeChatRunSummaryPriority(summary ActiveChatRunSummary, currentOwner string) int {
+	requestID := strings.TrimSpace(summary.RequestID)
+	priority := 0
+	if requestID != "" {
+		priority += 1
+	}
+	if requestID != "" && !strings.HasPrefix(requestID, "conversation-live-") {
+		priority += 2
+	}
+	if currentOwner != "" && requestID == currentOwner {
+		priority += 4
+	}
+	return priority
 }
 
 func (m *Manager) ActiveChatRunConversationIDs() []string {
@@ -632,6 +682,7 @@ func (m *Manager) FailUnstartedChatRun(requestID string, message string) bool {
 			}
 			state := normalizeChatRunState(run.state)
 			return state != ChatRunStateQueued &&
+				state != ChatRunStateDesktopQueued &&
 				state != ChatRunStateRunning &&
 				!isTerminalChatRunState(state)
 		},
@@ -942,6 +993,48 @@ func (m *Manager) ChatRunSnapshot(
 	return run.snapshot(), true
 }
 
+func (m *Manager) RunningChatRunSnapshot(conversationID string) (ChatRunSnapshot, bool) {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return ChatRunSnapshot{}, false
+	}
+
+	m.chatStore.chatMu.Lock()
+	defer m.chatStore.chatMu.Unlock()
+	m.pruneExpiredChatRunsLocked(time.Now())
+
+	if requestID := strings.TrimSpace(m.chatStore.chatRunByConversation[conversationID]); requestID != "" {
+		if run := m.chatStore.chatRuns[requestID]; chatRunIsRunningForConversation(run, conversationID) {
+			return run.snapshot(), true
+		}
+	}
+
+	var best *chatRun
+	var bestRequestID string
+	for requestID, run := range m.chatStore.chatRuns {
+		if !chatRunIsRunningForConversation(run, conversationID) {
+			continue
+		}
+		if best == nil ||
+			run.updatedAt.After(best.updatedAt) ||
+			(run.updatedAt.Equal(best.updatedAt) && strings.TrimSpace(requestID) > bestRequestID) {
+			best = run
+			bestRequestID = strings.TrimSpace(requestID)
+		}
+	}
+	if best == nil {
+		return ChatRunSnapshot{}, false
+	}
+	return best.snapshot(), true
+}
+
+func chatRunIsRunningForConversation(run *chatRun, conversationID string) bool {
+	return run != nil &&
+		!run.done &&
+		strings.TrimSpace(run.conversationID) == conversationID &&
+		normalizeChatRunState(run.state) == ChatRunStateRunning
+}
+
 func (m *Manager) MarkChatRunControl(
 	requestID string,
 	conversationID string,
@@ -1016,7 +1109,9 @@ func (m *Manager) MarkChatRunPayloads(
 			}
 		}
 		run.conversationID = conversationID
-		m.chatStore.chatRunByConversation[conversationID] = requestID
+		if m.chatRunCanClaimConversationLocked(conversationID, requestID) {
+			m.chatStore.chatRunByConversation[conversationID] = requestID
+		}
 	}
 	for _, payload := range payloads {
 		broadcast := m.appendChatPayloadLocked(run, payload, now)
@@ -1089,7 +1184,9 @@ func (m *Manager) broadcastChatEvent(requestID string, event *gatewayv1.ChatEven
 		run.applyState(ChatRunStateQueued)
 		m.chatStore.chatRuns[requestID] = run
 		if conversationID != "" {
-			m.chatStore.chatRunByConversation[conversationID] = requestID
+			if m.chatRunCanClaimConversationLocked(conversationID, requestID) {
+				m.chatStore.chatRunByConversation[conversationID] = requestID
+			}
 		}
 	}
 	if run != nil {
@@ -1104,7 +1201,9 @@ func (m *Manager) broadcastChatEvent(requestID string, event *gatewayv1.ChatEven
 				}
 			}
 			run.conversationID = conversationID
-			m.chatStore.chatRunByConversation[conversationID] = requestID
+			if m.chatRunCanClaimConversationLocked(conversationID, requestID) {
+				m.chatStore.chatRunByConversation[conversationID] = requestID
+			}
 			if run.workdir == "" {
 				if activeRun, ok := m.chatStore.historyActiveRuns[conversationID]; ok {
 					run.workdir = strings.TrimSpace(activeRun.workdir)
@@ -1201,7 +1300,9 @@ func (m *Manager) markChatRunStateSilent(
 			}
 		}
 		run.conversationID = conversationID
-		m.chatStore.chatRunByConversation[conversationID] = requestID
+		if state == ChatRunStateRunning || m.chatRunCanClaimConversationLocked(conversationID, requestID) {
+			m.chatStore.chatRunByConversation[conversationID] = requestID
+		}
 	}
 	run.applyState(state)
 	run.updatedAt = now
@@ -1262,7 +1363,10 @@ func (m *Manager) markChatRunControl(
 			}
 		}
 		run.conversationID = conversationID
-		m.chatStore.chatRunByConversation[conversationID] = requestID
+		if chatRunControlCanClaimConversation(controlType, state) ||
+			m.chatRunCanClaimConversationLocked(conversationID, requestID) {
+			m.chatStore.chatRunByConversation[conversationID] = requestID
+		}
 	}
 	broadcast := m.appendChatControlLocked(run, controlType, errorCode, message, now)
 	persist = chatRunEventAppendSnapshot(run, broadcast, now)
@@ -1333,6 +1437,11 @@ func (m *Manager) dispatchFromAgent(expected *AgentSession, env *gatewayv1.Agent
 
 	if sftpEvent := env.GetSftpEvent(); sftpEvent != nil {
 		m.broadcastSftpEvent(sftpEvent)
+		return
+	}
+
+	if chatQueueEvent := env.GetChatQueueEvent(); chatQueueEvent != nil {
+		m.broadcastChatQueueEvent(chatQueueEvent)
 		return
 	}
 
@@ -1424,6 +1533,7 @@ func (r *chatRun) shouldPrune(now time.Time) bool {
 		return true
 	}
 	return normalizeChatRunState(r.state) != ChatRunStateRunning &&
+		normalizeChatRunState(r.state) != ChatRunStateDesktopQueued &&
 		chatRunUpdatedBefore(r.updatedAt, now, chatRunStartRetention)
 }
 
@@ -1518,6 +1628,8 @@ func normalizeChatRunState(state string) string {
 		return ChatRunStateClaimed
 	case ChatRunStateStarting:
 		return ChatRunStateStarting
+	case ChatRunStateDesktopQueued:
+		return ChatRunStateDesktopQueued
 	case ChatRunStateRunning:
 		return ChatRunStateRunning
 	case ChatRunStateCompleted:
@@ -1542,7 +1654,7 @@ func isTerminalChatRunState(state string) bool {
 
 func ChatRunStateIsActive(state string) bool {
 	switch normalizeChatRunState(state) {
-	case ChatRunStateQueued, ChatRunStateDelivered, ChatRunStateClaimed, ChatRunStateStarting, ChatRunStateRunning:
+	case ChatRunStateQueued, ChatRunStateDelivered, ChatRunStateClaimed, ChatRunStateStarting, ChatRunStateDesktopQueued, ChatRunStateRunning:
 		return true
 	default:
 		return false
@@ -1559,6 +1671,8 @@ func chatRunStateForControlType(controlType string) string {
 		return ChatRunStateClaimed
 	case "starting":
 		return ChatRunStateStarting
+	case "queued_in_gui":
+		return ChatRunStateDesktopQueued
 	case "started":
 		return ChatRunStateRunning
 	case "completed":
@@ -1582,6 +1696,8 @@ func chatControlTypeForState(state string) string {
 		return "claimed"
 	case ChatRunStateStarting:
 		return "starting"
+	case ChatRunStateDesktopQueued:
+		return "queued_in_gui"
 	case ChatRunStateRunning:
 		return "started"
 	case ChatRunStateCompleted:

@@ -63,6 +63,7 @@ func normalizeChatRequestBody(body *handler.ChatRequestBody) error {
 	body.ClientRequestID = strings.TrimSpace(body.ClientRequestID)
 	body.ExecutionMode = handler.NormalizeExecutionMode(body.ExecutionMode)
 	body.Workdir = handler.NormalizeWorkdir(body.Workdir)
+	body.QueuePolicy = normalizeChatQueuePolicy(body.QueuePolicy)
 	body.SelectedSystemTools = handler.NormalizeSelectedSystemTools(body.SelectedSystemTools)
 	body.UploadedFiles = handler.NormalizeChatUploadedFiles(body.UploadedFiles)
 	body.RuntimeControls = handler.NormalizeChatRuntimeControls(body.RuntimeControls)
@@ -78,6 +79,15 @@ func normalizeChatRequestBody(body *handler.ChatRequestBody) error {
 		return errors.New("message is required")
 	}
 	return nil
+}
+
+func normalizeChatQueuePolicy(value string) string {
+	switch strings.TrimSpace(value) {
+	case "append", "interrupt":
+		return strings.TrimSpace(value)
+	default:
+		return "auto"
+	}
 }
 
 func startAcceptedChatCommand(
@@ -285,6 +295,7 @@ func buildProtoChatRequest(body handler.ChatRequestBody) *gatewayv1.ChatRequest 
 		Workdir:             body.Workdir,
 		SelectedSystemTools: body.SelectedSystemTools,
 		UploadedFiles:       handler.ToProtoChatUploadedFiles(body.UploadedFiles),
+		QueuePolicy:         body.QueuePolicy,
 	}
 }
 

@@ -198,7 +198,8 @@ function hasVisuallyEquivalentTailEntries(existing: ChatEntry[], liveEntries: Ch
 
 export function omitEquivalentTailEntries(existing: ChatEntry[], liveEntries: ChatEntry[]) {
   if (!hasVisuallyEquivalentTailEntries(existing, liveEntries)) {
-    return existing;
+    const overlap = findLargestOverlap(existing, liveEntries, areEntriesVisuallyEquivalent);
+    return overlap > 0 ? existing.slice(0, existing.length - overlap) : existing;
   }
   return existing.slice(0, existing.length - liveEntries.length);
 }
@@ -293,11 +294,27 @@ export function appendCommittedLiveEntries(existing: ChatEntry[], liveEntries: C
     return existing;
   }
 
-  const baseIndex = existing.length;
-  const committedEntries = liveEntries.map((entry, index) => ({
+  const visualOverlap = findLargestOverlap(existing, liveEntries, areEntriesVisuallyEquivalent);
+  const baseEntries =
+    visualOverlap > 0
+      ? [
+          ...existing.slice(0, existing.length - visualOverlap),
+          ...mergeReconciledMetadataIntoExisting(
+            existing.slice(existing.length - visualOverlap),
+            liveEntries.slice(0, visualOverlap),
+          ),
+        ]
+      : existing;
+  const entriesToCommit = visualOverlap > 0 ? liveEntries.slice(visualOverlap) : liveEntries;
+  if (entriesToCommit.length === 0) {
+    return baseEntries;
+  }
+
+  const baseIndex = baseEntries.length;
+  const committedEntries = entriesToCommit.map((entry, index) => ({
     ...cloneValue(entry),
     id: buildCommittedEntryId(entry, baseIndex + index),
   }));
 
-  return [...existing, ...committedEntries];
+  return [...baseEntries, ...committedEntries];
 }

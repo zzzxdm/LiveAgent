@@ -166,6 +166,16 @@ type AssistantGroupBuilder = {
 
 type UploadedFilesUserMessage = Pick<Message, "role" | "content"> & Record<string, unknown>;
 
+const LIVE_UPLOADED_FILE_KINDS = new Set<string>([
+  "text",
+  "image",
+  "pdf",
+  "notebook",
+  "word",
+  "spreadsheet",
+  "archive",
+]);
+
 function randomId(prefix: string) {
   return `${prefix}-${crypto.randomUUID()}`;
 }
@@ -224,6 +234,46 @@ function readRound(value: unknown) {
   const round = readNumber(value);
   if (typeof round !== "number") return undefined;
   return round > 0 ? Math.floor(round) : undefined;
+}
+
+function normalizeLiveUploadedFile(value: unknown): PendingUploadedFile | null {
+  const record = asNonArrayRecord(value);
+  const relativePath = readString(record.relativePath ?? record.relative_path).trim();
+  const fileName = readString(record.fileName ?? record.file_name).trim() || relativePath;
+  const kind = readString(record.kind).trim();
+  const sizeBytes = readNumber(record.sizeBytes ?? record.size_bytes) ?? 0;
+  if (!relativePath || !fileName || !LIVE_UPLOADED_FILE_KINDS.has(kind)) {
+    return null;
+  }
+  const absolutePath = readString(record.absolutePath ?? record.absolute_path).trim();
+  return {
+    relativePath,
+    absolutePath: absolutePath || undefined,
+    fileName,
+    kind: kind as PendingUploadedFile["kind"],
+    sizeBytes: Math.max(0, Math.floor(sizeBytes)),
+  };
+}
+
+function normalizeLiveUploadedFiles(value: unknown): PendingUploadedFile[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((item) => normalizeLiveUploadedFile(item))
+    .filter((file): file is PendingUploadedFile => file !== null);
+}
+
+function liveUserEntryMatches(
+  entry: ChatEntry | undefined,
+  text: string,
+  attachments: PendingUploadedFile[],
+) {
+  return (
+    entry?.kind === "user" &&
+    entry.text === text &&
+    JSON.stringify(entry.attachments) === JSON.stringify(attachments)
+  );
 }
 
 function readHistoryMessageRef(value: unknown): HistoryMessageRef | undefined {
@@ -1166,6 +1216,26 @@ function enrichTailHostedSearchEntriesWithText(entries: ChatEntry[]): ChatEntry[
 }
 
 export function pushChatEvent(entries: ChatEntry[], event: ChatEvent): ChatEntry[] {
+  if (event.type === "user_message") {
+    const text = readString(event.message);
+    const attachments = normalizeLiveUploadedFiles(event.uploaded_files);
+    if (!text.trim() && attachments.length === 0) {
+      return entries;
+    }
+    if (liveUserEntryMatches(entries.at(-1), text, attachments)) {
+      return entries;
+    }
+    return [
+      ...entries,
+      {
+        id: randomId("live-user"),
+        kind: "user",
+        text,
+        attachments,
+      },
+    ];
+  }
+
   if (event.type === "token") {
     if (isCheckpointTokenEvent(event)) {
       const checkpoint = normalizeCheckpointEntry({
