@@ -634,21 +634,6 @@
     isolation: isolate;
   }
 
-  .settings-section-shell::before {
-    content: "";
-    position: absolute;
-    inset: -16px 0 auto;
-    height: 112px;
-    border-radius: 24px;
-    background:
-      radial-gradient(circle at top left, hsl(var(--primary) / 0.12), transparent 58%),
-      linear-gradient(180deg, hsl(var(--primary) / 0.06), transparent 76%);
-    filter: blur(18px);
-    opacity: 0.9;
-    pointer-events: none;
-    z-index: -1;
-  }
-
   .ssh-auth-panel {
     overflow: hidden;
     transition:
@@ -707,10 +692,6 @@
       transition-duration: 1ms;
     }
 
-    .settings-section-shell::before {
-      opacity: 0.45;
-      filter: none;
-    }
   }
 
   /* Typing indicator */
