@@ -49,7 +49,7 @@ func (m *Manager) ProbeTunnel(
 	m.tunnels.mu.Unlock()
 
 	diagnostics := ProbePublicTunnel(ctx, publicURL)
-	if updated, err := m.SetTunnelDiagnostics(recordID, diagnostics); err == nil {
+	if updated, err := m.setTunnelDiagnostics(recordID, diagnostics); err == nil {
 		return updated, nil
 	}
 	m.tunnels.mu.Lock()

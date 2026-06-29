@@ -635,14 +635,6 @@ func appendTunnelForwardedHeaders(
 	return headers
 }
 
-func writeTunnelResponseHeaders(
-	w http.ResponseWriter,
-	frame *gatewayv1.TunnelFrame,
-	tunnel *gatewayv1.TunnelSummary,
-) {
-	writeTunnelHTTPHeaders(w, tunnelResponseHeaders(frame, tunnel))
-}
-
 func tunnelResponseHeaders(
 	frame *gatewayv1.TunnelFrame,
 	tunnel *gatewayv1.TunnelSummary,

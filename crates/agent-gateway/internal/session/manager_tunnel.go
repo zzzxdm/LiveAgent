@@ -15,8 +15,8 @@ import (
 )
 
 const (
-	MaxTunnelsPerAgent       = 5
-	MaxTunnelConnections     = 20
+	maxTunnelsPerAgent       = 5
+	maxTunnelConnections     = 20
 	defaultTunnelTTLSeconds  = 3600
 	tunnelSlugEntropyBytes   = 24
 	tunnelStreamChannelDepth = 256
@@ -158,7 +158,7 @@ func (m *Manager) ListTunnels() []*gatewayv1.TunnelSummary {
 	return summaries
 }
 
-func (m *Manager) SetTunnelDiagnostics(identifier string, diagnostics []*gatewayv1.TunnelDiagnostic) (*gatewayv1.TunnelSummary, error) {
+func (m *Manager) setTunnelDiagnostics(identifier string, diagnostics []*gatewayv1.TunnelDiagnostic) (*gatewayv1.TunnelSummary, error) {
 	identifier = strings.TrimSpace(identifier)
 	if identifier == "" {
 		return nil, ErrTunnelNotFound
@@ -208,7 +208,7 @@ func (m *Manager) PrepareTunnelCreate(
 		}
 		activeCount += 1
 	}
-	if activeCount >= MaxTunnelsPerAgent {
+	if activeCount >= maxTunnelsPerAgent {
 		return nil, ErrTunnelLimitExceeded
 	}
 
@@ -371,7 +371,7 @@ func (m *Manager) StorePreparedTunnel(
 	return tunnelSummaryLocked(record, now, online), nil
 }
 
-func (m *Manager) CreateTunnelFromAgent(
+func (m *Manager) createTunnelFromAgent(
 	input *gatewayv1.TunnelControlRequest,
 ) (*gatewayv1.TunnelSummary, error) {
 	prepared, err := m.PrepareTunnelCreate(input, input.GetPublicBaseUrl())
@@ -381,7 +381,7 @@ func (m *Manager) CreateTunnelFromAgent(
 	return m.StorePreparedTunnel(prepared, input.GetTargetUrl())
 }
 
-func (m *Manager) UpdateTunnelFromAgent(
+func (m *Manager) updateTunnelFromAgent(
 	input *gatewayv1.TunnelControlRequest,
 ) (*gatewayv1.TunnelSummary, error) {
 	prepared, err := m.PrepareTunnelUpdate(input)
@@ -468,7 +468,7 @@ func (m *Manager) AcquireTunnel(slug string, streamID string) (*TunnelStreamLeas
 	if isTunnelExpired(record, now) {
 		return nil, ErrTunnelExpired
 	}
-	if record.activeConnections >= MaxTunnelConnections {
+	if record.activeConnections >= maxTunnelConnections {
 		return nil, ErrTunnelOverLimit
 	}
 	stream := &tunnelStream{
@@ -535,7 +535,7 @@ func (m *Manager) CloseTunnel(identifier string) (*gatewayv1.TunnelSummary, erro
 	return summary, nil
 }
 
-func (m *Manager) ResumeTunnel(input *gatewayv1.TunnelControlRequest) (*gatewayv1.TunnelSummary, error) {
+func (m *Manager) resumeTunnel(input *gatewayv1.TunnelControlRequest) (*gatewayv1.TunnelSummary, error) {
 	if input == nil {
 		return nil, errors.New("resume tunnel input is required")
 	}
@@ -640,7 +640,7 @@ func (m *Manager) handleAgentTunnelControlInner(
 			Tunnels: m.ListTunnels(),
 		}
 	case "create":
-		tunnel, err := m.CreateTunnelFromAgent(request)
+		tunnel, err := m.createTunnelFromAgent(request)
 		if err != nil {
 			return tunnelControlErrorFor(action, err)
 		}
@@ -650,7 +650,7 @@ func (m *Manager) handleAgentTunnelControlInner(
 			Tunnels: m.ListTunnels(),
 		}
 	case "update":
-		tunnel, err := m.UpdateTunnelFromAgent(request)
+		tunnel, err := m.updateTunnelFromAgent(request)
 		if err != nil {
 			return tunnelControlErrorFor(action, err)
 		}
@@ -688,7 +688,7 @@ func (m *Manager) handleAgentTunnelControlInner(
 			Tunnels: m.ListTunnels(),
 		}
 	case "resume":
-		tunnel, err := m.ResumeTunnel(request)
+		tunnel, err := m.resumeTunnel(request)
 		if err != nil {
 			return tunnelControlErrorFor(action, err)
 		}

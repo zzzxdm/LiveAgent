@@ -93,10 +93,11 @@ type websocketConnection struct {
 	cfg *config.Config
 	sm  *session.Manager
 
-	conn *websocket.Conn
-	req  *http.Request
+	conn         *websocket.Conn
+	req          *http.Request
+	writeMu      sync.Mutex
+	writeTimeout time.Duration
 
-	writer     *websocketConnectionWriter
 	closeOnce  sync.Once
 	done       chan struct{}
 	authorized bool
@@ -138,7 +139,7 @@ func NewWebSocketServer(cfg *config.Config, sm *session.Manager) http.Handler {
 			sm:               sm,
 			conn:             conn,
 			req:              r,
-			writer:           newWebsocketConnectionWriter(conn, cfg.WebSocketWriteTimeout),
+			writeTimeout:     cfg.WebSocketWriteTimeout,
 			done:             make(chan struct{}),
 			terminalInterest: newWebsocketTerminalInterestTracker(),
 		}
@@ -265,7 +266,7 @@ func (c *websocketConnection) startHistorySyncForwarder() {
 				if !ok {
 					return
 				}
-				if err := c.writeHistoryEvent(websocketHistorySyncPayload(event, c.sm.ActiveChatRunSummaries()...)); err != nil {
+				if err := c.writeEvent("history.event", websocketHistorySyncPayload(event, c.sm.ActiveChatRunSummaries()...)); err != nil {
 					c.close()
 					return
 				}
@@ -292,11 +293,11 @@ func (c *websocketConnection) startSettingsSyncForwarder() {
 				if !ok {
 					return
 				}
-				payload, err := websocketSettingsSyncPayload(event)
+				payload, err := websocketSettingsJSONPayload(event.GetSettingsJson())
 				if err != nil {
 					return
 				}
-				if err := c.writeSettingsEvent(payload); err != nil {
+				if err := c.writeEvent("settings.event", payload); err != nil {
 					c.close()
 					return
 				}
@@ -326,7 +327,7 @@ func (c *websocketConnection) startTerminalEventForwarder() {
 				if !c.shouldForwardTerminalEvent(event) {
 					continue
 				}
-				if err := c.writeTerminalEvent(websocketTerminalEventPayload(event)); err != nil {
+				if err := c.writeEvent("terminal.event", websocketTerminalEventPayload(event)); err != nil {
 					c.close()
 					return
 				}
@@ -356,7 +357,7 @@ func (c *websocketConnection) startSftpEventForwarder() {
 				if !c.sm.WebSshTerminalEnabled() {
 					continue
 				}
-				if err := c.writeSftpEvent(websocketSftpEventPayload(event)); err != nil {
+				if err := c.writeEvent("sftp.event", websocketSftpEventPayload(event)); err != nil {
 					c.close()
 					return
 				}
@@ -383,7 +384,7 @@ func (c *websocketConnection) startChatQueueEventForwarder() {
 				if !ok {
 					return
 				}
-				if err := c.writeChatQueueEvent(websocketChatQueueEventPayload(event)); err != nil {
+				if err := c.writeEvent("chat_queue.event", websocketChatQueueEventPayload(event)); err != nil {
 					c.close()
 					return
 				}
@@ -400,7 +401,7 @@ func (c *websocketConnection) replayTerminalSessionSnapshot() {
 		if !c.terminalSessionAllowed(terminalSession) {
 			continue
 		}
-		if err := c.writeTerminalEvent(websocketTerminalEventPayload(&gatewayv1.TerminalEvent{
+		if err := c.writeEvent("terminal.event", websocketTerminalEventPayload(&gatewayv1.TerminalEvent{
 			Kind:           "created",
 			SessionId:      terminalSession.GetId(),
 			ProjectPathKey: terminalSession.GetProjectPathKey(),
@@ -519,41 +520,23 @@ func (c *websocketConnection) writeError(requestID string, message string) error
 	})
 }
 
-func (c *websocketConnection) writeHistoryEvent(payload any) error {
+func (c *websocketConnection) writeEvent(eventType string, payload any) error {
 	return c.writeEnvelope(websocketEnvelope{
-		Type:    "history.event",
-		Payload: payload,
-	})
-}
-
-func (c *websocketConnection) writeSettingsEvent(payload any) error {
-	return c.writeEnvelope(websocketEnvelope{
-		Type:    "settings.event",
-		Payload: payload,
-	})
-}
-
-func (c *websocketConnection) writeTerminalEvent(payload any) error {
-	return c.writeEnvelope(websocketEnvelope{
-		Type:    "terminal.event",
-		Payload: payload,
-	})
-}
-
-func (c *websocketConnection) writeSftpEvent(payload any) error {
-	return c.writeEnvelope(websocketEnvelope{
-		Type:    "sftp.event",
-		Payload: payload,
-	})
-}
-
-func (c *websocketConnection) writeChatQueueEvent(payload any) error {
-	return c.writeEnvelope(websocketEnvelope{
-		Type:    "chat_queue.event",
+		Type:    eventType,
 		Payload: payload,
 	})
 }
 
 func (c *websocketConnection) writeEnvelope(envelope websocketEnvelope) error {
-	return c.writer.write(envelope)
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	if c.writeTimeout > 0 {
+		if err := c.conn.SetWriteDeadline(time.Now().Add(c.writeTimeout)); err != nil {
+			return err
+		}
+		defer func() {
+			_ = c.conn.SetWriteDeadline(time.Time{})
+		}()
+	}
+	return c.conn.WriteJSON(envelope)
 }

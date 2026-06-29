@@ -15,7 +15,7 @@ import (
 )
 
 func websocketProtoPayload(message proto.Message, useProtoNames bool) map[string]any {
-	if isNilProtoMessage(message) {
+	if message == nil || (reflect.ValueOf(message).Kind() == reflect.Pointer && reflect.ValueOf(message).IsNil()) {
 		return nil
 	}
 	raw, err := protojson.MarshalOptions{
@@ -31,14 +31,6 @@ func websocketProtoPayload(message proto.Message, useProtoNames bool) map[string
 	}
 	coerceProtoJSONNumbers(payload, message.ProtoReflect().Descriptor(), useProtoNames)
 	return payload
-}
-
-func isNilProtoMessage(message proto.Message) bool {
-	if message == nil {
-		return true
-	}
-	value := reflect.ValueOf(message)
-	return value.Kind() == reflect.Pointer && value.IsNil()
 }
 
 func coerceProtoJSONNumbers(payload map[string]any, descriptor protoreflect.MessageDescriptor, useProtoNames bool) {
@@ -187,10 +179,6 @@ func websocketHistorySyncPayload(
 	}
 
 	return payload
-}
-
-func websocketSettingsSyncPayload(event *gatewayv1.SettingsSyncEvent) (map[string]any, error) {
-	return websocketSettingsJSONPayload(event.GetSettingsJson())
 }
 
 func websocketSettingsJSONPayload(raw string) (map[string]any, error) {
@@ -390,30 +378,14 @@ func websocketTerminalEventPayload(event *gatewayv1.TerminalEvent) map[string]an
 	return payload
 }
 
-func websocketMemoryResultPayload(raw string) (any, error) {
-	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" {
-		return map[string]any{}, nil
-	}
-
-	var payload any
-	if err := json.Unmarshal([]byte(trimmed), &payload); err != nil {
-		return nil, errors.New("gateway memory response is not valid JSON")
-	}
-	if payload == nil {
-		return map[string]any{}, nil
-	}
-	return payload, nil
-}
-
-func websocketGitResultPayload(raw string) (any, error) {
+func unmarshalJSONPayload(raw string) (any, error) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
 		return map[string]any{}, nil
 	}
 	var payload any
 	if err := json.Unmarshal([]byte(trimmed), &payload); err != nil {
-		return nil, errors.New("gateway git response is not valid JSON")
+		return nil, errors.New("response is not valid JSON")
 	}
 	if payload == nil {
 		return map[string]any{}, nil
@@ -440,14 +412,6 @@ func websocketRawPayloadJSON(raw json.RawMessage) (string, error) {
 		return "", errors.New("invalid settings.update payload")
 	}
 	return string(normalized), nil
-}
-
-func nullableTrimmedString(value string) any {
-	trimmed := strings.TrimSpace(value)
-	if trimmed == "" {
-		return nil
-	}
-	return trimmed
 }
 
 func websocketOptionalUint32(value *int, field string) (uint32, error) {

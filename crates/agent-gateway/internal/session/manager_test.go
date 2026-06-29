@@ -58,7 +58,7 @@ func TestApplySettingsJSONPreservingRemoteDoesNotTrustIncomingRemote(t *testing.
 
 func TestTerminalSessionSnapshotPreservesSshMetadataAndSorts(t *testing.T) {
 	manager := NewManager()
-	manager.ReplaceTerminalSessionSnapshot("", []*gatewayv1.TerminalSession{
+	manager.replaceTerminalSessionSnapshot("", []*gatewayv1.TerminalSession{
 		{
 			Id:             "ssh-2",
 			ProjectPathKey: "/workspace/b",

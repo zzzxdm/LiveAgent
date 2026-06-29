@@ -20,7 +20,7 @@ func onlineTunnelTestManager() *Manager {
 
 func createTestTunnel(t *testing.T, manager *Manager, name string) *gatewayv1.TunnelSummary {
 	t.Helper()
-	tunnel, err := manager.CreateTunnelFromAgent(&gatewayv1.TunnelControlRequest{
+	tunnel, err := manager.createTunnelFromAgent(&gatewayv1.TunnelControlRequest{
 		Action:        "create",
 		TargetUrl:     "http://localhost:3000/app",
 		Name:          name,
@@ -28,7 +28,7 @@ func createTestTunnel(t *testing.T, manager *Manager, name string) *gatewayv1.Tu
 		PublicBaseUrl: "https://gateway.example",
 	})
 	if err != nil {
-		t.Fatalf("CreateTunnelFromAgent: %v", err)
+		t.Fatalf("createTunnelFromAgent: %v", err)
 	}
 	if tunnel.GetSlug() == "" || tunnel.GetPublicUrl() == "" {
 		t.Fatalf("created tunnel missing slug/public URL: %+v", tunnel)
@@ -40,14 +40,14 @@ func TestTunnelRegistryCreateLimitListAndClose(t *testing.T) {
 	manager := onlineTunnelTestManager()
 
 	var first *gatewayv1.TunnelSummary
-	for i := 0; i < MaxTunnelsPerAgent; i++ {
+	for i := 0; i < maxTunnelsPerAgent; i++ {
 		tunnel := createTestTunnel(t, manager, "app")
 		if i == 0 {
 			first = tunnel
 		}
 	}
 
-	if _, err := manager.CreateTunnelFromAgent(&gatewayv1.TunnelControlRequest{
+	if _, err := manager.createTunnelFromAgent(&gatewayv1.TunnelControlRequest{
 		Action:        "create",
 		TargetUrl:     "http://localhost:3001",
 		TtlSeconds:    3600,
@@ -56,8 +56,8 @@ func TestTunnelRegistryCreateLimitListAndClose(t *testing.T) {
 		t.Fatalf("expected ErrTunnelLimitExceeded, got %v", err)
 	}
 
-	if got := len(manager.ListTunnels()); got != MaxTunnelsPerAgent {
-		t.Fatalf("ListTunnels returned %d tunnels, want %d", got, MaxTunnelsPerAgent)
+	if got := len(manager.ListTunnels()); got != maxTunnelsPerAgent {
+		t.Fatalf("ListTunnels returned %d tunnels, want %d", got, maxTunnelsPerAgent)
 	}
 
 	closed, err := manager.CloseTunnel(first.GetId())
@@ -67,8 +67,8 @@ func TestTunnelRegistryCreateLimitListAndClose(t *testing.T) {
 	if closed.GetStatus() != "expired" {
 		t.Fatalf("closed tunnel summary status = %q, want expired", closed.GetStatus())
 	}
-	if got := len(manager.ListTunnels()); got != MaxTunnelsPerAgent-1 {
-		t.Fatalf("ListTunnels after close returned %d tunnels, want %d", got, MaxTunnelsPerAgent-1)
+	if got := len(manager.ListTunnels()); got != maxTunnelsPerAgent-1 {
+		t.Fatalf("ListTunnels after close returned %d tunnels, want %d", got, maxTunnelsPerAgent-1)
 	}
 }
 
@@ -76,8 +76,8 @@ func TestTunnelAcquireConnectionLimitAndRelease(t *testing.T) {
 	manager := onlineTunnelTestManager()
 	tunnel := createTestTunnel(t, manager, "app")
 
-	leases := make([]*TunnelStreamLease, 0, MaxTunnelConnections)
-	for i := 0; i < MaxTunnelConnections; i++ {
+	leases := make([]*TunnelStreamLease, 0, maxTunnelConnections)
+	for i := 0; i < maxTunnelConnections; i++ {
 		lease, err := manager.AcquireTunnel(tunnel.GetSlug(), "stream-"+string(rune('a'+i)))
 		if err != nil {
 			t.Fatalf("AcquireTunnel %d: %v", i, err)
@@ -129,7 +129,7 @@ func TestTunnelExpiredCannotBeAcquired(t *testing.T) {
 
 func TestTunnelInfiniteTTLCreatesNonExpiringTunnel(t *testing.T) {
 	manager := onlineTunnelTestManager()
-	tunnel, err := manager.CreateTunnelFromAgent(&gatewayv1.TunnelControlRequest{
+	tunnel, err := manager.createTunnelFromAgent(&gatewayv1.TunnelControlRequest{
 		Action:        "create",
 		TargetUrl:     "http://localhost:3000/app",
 		Name:          "app",
@@ -137,7 +137,7 @@ func TestTunnelInfiniteTTLCreatesNonExpiringTunnel(t *testing.T) {
 		PublicBaseUrl: "https://gateway.example",
 	})
 	if err != nil {
-		t.Fatalf("CreateTunnelFromAgent with infinite TTL: %v", err)
+		t.Fatalf("createTunnelFromAgent with infinite TTL: %v", err)
 	}
 	if tunnel.GetExpiresAt() != 0 {
 		t.Fatalf("infinite tunnel expiresAt = %d, want 0", tunnel.GetExpiresAt())
@@ -161,7 +161,7 @@ func TestTunnelUpdateChangesTargetNameScopeAndTTL(t *testing.T) {
 	manager := onlineTunnelTestManager()
 	tunnel := createTestTunnel(t, manager, "app")
 
-	updated, err := manager.UpdateTunnelFromAgent(&gatewayv1.TunnelControlRequest{
+	updated, err := manager.updateTunnelFromAgent(&gatewayv1.TunnelControlRequest{
 		Action:         "update",
 		TunnelId:       tunnel.GetId(),
 		TargetUrl:      "http://127.0.0.1:4000/dashboard",
@@ -170,7 +170,7 @@ func TestTunnelUpdateChangesTargetNameScopeAndTTL(t *testing.T) {
 		ProjectPathKey: "project:/tmp/liveagent",
 	})
 	if err != nil {
-		t.Fatalf("UpdateTunnelFromAgent: %v", err)
+		t.Fatalf("updateTunnelFromAgent: %v", err)
 	}
 	if updated.GetName() != "dashboard" {
 		t.Fatalf("updated name = %q, want dashboard", updated.GetName())
@@ -197,7 +197,7 @@ func TestTunnelUpdateChangesTargetNameScopeAndTTL(t *testing.T) {
 func TestTunnelInfiniteTTLStaysActiveAndVisible(t *testing.T) {
 	manager := onlineTunnelTestManager()
 
-	tunnel, err := manager.CreateTunnelFromAgent(&gatewayv1.TunnelControlRequest{
+	tunnel, err := manager.createTunnelFromAgent(&gatewayv1.TunnelControlRequest{
 		Action:         "create",
 		TargetUrl:      "http://localhost:3000/app",
 		Name:           "app",
@@ -206,7 +206,7 @@ func TestTunnelInfiniteTTLStaysActiveAndVisible(t *testing.T) {
 		ProjectPathKey: "/workspace/app",
 	})
 	if err != nil {
-		t.Fatalf("CreateTunnelFromAgent: %v", err)
+		t.Fatalf("createTunnelFromAgent: %v", err)
 	}
 	if tunnel.GetExpiresAt() != 0 {
 		t.Fatalf("infinite tunnel expires_at = %d, want 0", tunnel.GetExpiresAt())
@@ -231,7 +231,7 @@ func TestTunnelUpdateChangesTargetNameTTLAndKeepsProjectScope(t *testing.T) {
 	manager := onlineTunnelTestManager()
 	tunnel := createTestTunnel(t, manager, "app")
 
-	updated, err := manager.UpdateTunnelFromAgent(&gatewayv1.TunnelControlRequest{
+	updated, err := manager.updateTunnelFromAgent(&gatewayv1.TunnelControlRequest{
 		Action:         "update",
 		TunnelId:       tunnel.GetId(),
 		TargetUrl:      "http://localhost:3000/next",
@@ -240,7 +240,7 @@ func TestTunnelUpdateChangesTargetNameTTLAndKeepsProjectScope(t *testing.T) {
 		ProjectPathKey: "/workspace/app",
 	})
 	if err != nil {
-		t.Fatalf("UpdateTunnelFromAgent: %v", err)
+		t.Fatalf("updateTunnelFromAgent: %v", err)
 	}
 	if updated.GetTargetUrl() != "http://localhost:3000/next" {
 		t.Fatalf("target_url = %q, want http://localhost:3000/next", updated.GetTargetUrl())

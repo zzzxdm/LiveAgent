@@ -97,7 +97,7 @@ func (m *Manager) ClearSessionIfHeartbeatStale(session *AgentSession, timeout ti
 	return true
 }
 
-func (m *Manager) ClearSessionForEpoch(sessionEpoch uint64) bool {
+func (m *Manager) clearSessionForEpoch(sessionEpoch uint64) bool {
 	m.registry.mu.Lock()
 	session := m.registry.session
 	if session == nil || m.registry.sessionEpoch != sessionEpoch {

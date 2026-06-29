@@ -417,7 +417,7 @@ func (m *Manager) FailStartingChatRun(requestID string, message string) bool {
 		},
 	)
 	if failed {
-		m.ClearSessionForEpoch(sessionEpoch)
+		m.clearSessionForEpoch(sessionEpoch)
 	}
 	return failed
 }
