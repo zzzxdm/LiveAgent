@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/liveagent/agent-gateway/internal/chatwire"
 	"github.com/liveagent/agent-gateway/internal/config"
 	gatewayv1 "github.com/liveagent/agent-gateway/internal/proto/v1"
 	"github.com/liveagent/agent-gateway/internal/session"
@@ -173,15 +174,15 @@ func chatBroadcastPayload(event *session.ChatBroadcastEvent) (map[string]any, bo
 				payload["workdir"] = workdir
 			}
 		}
-		trimLargeToolContentForSSE(payload, "")
+		chatwire.TrimLargeToolContent(payload, "")
 		return publicChatPayload(payload), isTerminalChatPayload(payload)
 	}
 	if event.Control != nil {
-		payload := chatControlPayload(event.Control, event.Seq, event.Workdir)
-		return publicChatPayload(payload), isTerminalChatControlPayload(event.Control)
+		payload := chatwire.ControlPayload(event.Control, event.Seq, event.Workdir)
+		return publicChatPayload(payload), chatwire.IsTerminalControl(event.Control)
 	}
 	if event.Event != nil {
-		payload := chatEventPayload(event.Event, event.Seq, event.Workdir)
+		payload := chatwire.EventPayload(event.Event, event.Seq, event.Workdir)
 		return publicChatPayload(payload), event.Event.GetType() == gatewayv1.ChatEvent_DONE ||
 			event.Event.GetType() == gatewayv1.ChatEvent_ERROR
 	}

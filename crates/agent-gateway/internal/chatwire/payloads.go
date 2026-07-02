@@ -1,4 +1,7 @@
-package server
+// Package chatwire shapes agent chat protobuf events into the JSON payloads
+// sent to webui clients. Shaping (decode, normalize, trim) happens exactly once
+// at ingress so every subscriber observes identical bytes.
+package chatwire
 
 import (
 	"encoding/json"
@@ -7,7 +10,8 @@ import (
 	gatewayv1 "github.com/liveagent/agent-gateway/internal/proto/v1"
 )
 
-func isTerminalChatControlPayload(control *gatewayv1.ChatControlEvent) bool {
+// IsTerminalControl reports whether a control event carries a terminal run state.
+func IsTerminalControl(control *gatewayv1.ChatControlEvent) bool {
 	switch strings.TrimSpace(control.GetState()) {
 	case "completed", "failed", "cancelled":
 		return true
@@ -16,7 +20,8 @@ func isTerminalChatControlPayload(control *gatewayv1.ChatControlEvent) bool {
 	}
 }
 
-func chatControlPayload(
+// ControlPayload shapes a ChatControlEvent into a wire payload.
+func ControlPayload(
 	control *gatewayv1.ChatControlEvent,
 	seq int64,
 	workdirInput ...string,
@@ -47,8 +52,10 @@ func chatControlPayload(
 	return payload
 }
 
-func chatEventPayload(event *gatewayv1.ChatEvent, seq int64, workdirInput ...string) map[string]any {
-	protoType := chatEventType(event.GetType())
+// EventPayload shapes a ChatEvent into a wire payload, decoding the JSON data
+// blob and trimming oversized tool content.
+func EventPayload(event *gatewayv1.ChatEvent, seq int64, workdirInput ...string) map[string]any {
+	protoType := EventTypeName(event.GetType())
 	payload := map[string]any{
 		"type": protoType,
 	}
@@ -77,12 +84,12 @@ func chatEventPayload(event *gatewayv1.ChatEvent, seq int64, workdirInput ...str
 		payload["conversation_id"] = conversationID
 	}
 
-	trimLargeToolContentForSSE(payload, protoType)
+	TrimLargeToolContent(payload, protoType)
 
 	return payload
 }
 
-const sseToolContentMaxChars = 200
+const toolContentMaxChars = 200
 
 var toolFieldsToTrim = map[string][]string{
 	"Write":        {"content"},
@@ -90,7 +97,9 @@ var toolFieldsToTrim = map[string][]string{
 	"NotebookEdit": {"new_source"},
 }
 
-func trimLargeToolContentForSSE(payload map[string]any, protoType string) {
+// TrimLargeToolContent truncates oversized tool arguments/results in place,
+// attaching a __liveagent_stream_preview meta block describing the original size.
+func TrimLargeToolContent(payload map[string]any, protoType string) {
 	eventType, _ := payload["type"].(string)
 
 	if eventType == "tool_call" || eventType == "tool_call_delta" ||
@@ -119,7 +128,7 @@ func trimToolCallPayload(payload map[string]any) {
 	}
 
 	for _, field := range fields {
-		trimStringFieldWithPreview(args, field, sseToolContentMaxChars)
+		trimStringFieldWithPreview(args, field, toolContentMaxChars)
 	}
 }
 
@@ -141,9 +150,9 @@ func tryParseJSONStringArg(payload map[string]any, keys ...string) map[string]an
 func trimToolResultPayload(payload map[string]any) {
 	switch content := payload["content"].(type) {
 	case string:
-		if len(content) > sseToolContentMaxChars {
+		if len(content) > toolContentMaxChars {
 			lines := countLines(content)
-			payload["content"] = content[:sseToolContentMaxChars]
+			payload["content"] = content[:toolContentMaxChars]
 			ensurePreviewMeta(payload, "content", len(content), lines, true)
 		}
 	case []any:
@@ -152,9 +161,9 @@ func trimToolResultPayload(payload map[string]any) {
 			if !ok {
 				continue
 			}
-			if text, ok := block["text"].(string); ok && len(text) > sseToolContentMaxChars {
+			if text, ok := block["text"].(string); ok && len(text) > toolContentMaxChars {
 				lines := countLines(text)
-				block["text"] = text[:sseToolContentMaxChars]
+				block["text"] = text[:toolContentMaxChars]
 				ensurePreviewMeta(block, "text", len(text), lines, true)
 			}
 		}
@@ -226,7 +235,8 @@ func firstMap(candidates ...any) map[string]any {
 	return nil
 }
 
-func chatEventType(eventType gatewayv1.ChatEvent_ChatEventType) string {
+// EventTypeName maps the protobuf ChatEvent type enum to its wire name.
+func EventTypeName(eventType gatewayv1.ChatEvent_ChatEventType) string {
 	switch eventType {
 	case gatewayv1.ChatEvent_TOKEN:
 		return "token"
