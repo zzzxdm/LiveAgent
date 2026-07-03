@@ -135,6 +135,13 @@ export default function App() {
   const saveSequenceRef = useRef(0);
   const saveChainRef = useRef<Promise<unknown>>(Promise.resolve());
   const defaultWorkdirRef = useRef("");
+  // Mirrors `settings` so setSettings/queueSettingsSave can read the latest value
+  // synchronously without passing a (side-effecting) function into setSettingsState —
+  // React 18 StrictMode double-invokes functional state updaters in development,
+  // which would otherwise run those side effects (and any non-idempotent work like
+  // crypto.randomUUID() inside caller updaters) twice per call.
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
   const [systemThemeVersion, setSystemThemeVersion] = useState(0);
   const effectiveTheme = useMemo(
     () => resolveEffectiveTheme(settings.theme),
@@ -163,6 +170,7 @@ export default function App() {
         if (!cancelled) {
           defaultWorkdirRef.current = defaultWorkdir;
           const loadedWithDefaults = applyRuntimeSystemDefaults(loaded, defaultWorkdir);
+          settingsRef.current = loadedWithDefaults;
           setSettingsState(loadedWithDefaults);
           setSettingsSaveState({ status: "saved" });
           void publishGatewaySettingsSync(loadedWithDefaults).catch((error) => {
@@ -171,7 +179,9 @@ export default function App() {
         }
       } catch (error) {
         if (!cancelled) {
-          setSettingsState(getDefaultSettings());
+          const fallback = getDefaultSettings();
+          settingsRef.current = fallback;
+          setSettingsState(fallback);
           setSettingsSaveState({
             status: "error",
             message: asErrorMessage(error, "加载设置失败，已回退到默认配置。"),
@@ -206,12 +216,12 @@ export default function App() {
               })
             : next;
           if (persistResult.ssh && saveSequenceRef.current === saveSequence) {
-            setSettingsState((current) =>
-              normalizeSettings({
-                ...current,
-                ssh: persistResult.ssh,
-              }),
-            );
+            const merged = normalizeSettings({
+              ...settingsRef.current,
+              ssh: persistResult.ssh,
+            });
+            settingsRef.current = merged;
+            setSettingsState(merged);
           }
           if (persistResult.conflict) {
             throw new Error(persistResult.conflict);
@@ -239,21 +249,21 @@ export default function App() {
 
   const setSettings = useCallback(
     (updater: (prev: AppSettings) => AppSettings) => {
-      setSettingsState((prev) => {
-        const updated = updater(prev);
-        if (updated === prev) return prev;
-        const next = applyRuntimeSystemDefaults(
-          normalizeSettings(updated),
-          defaultWorkdirRef.current,
-        );
-        queueSettingsSave(
-          prev,
-          next,
-          "保存设置失败。",
-          hasSettingsSyncChanged(prev, next) || hasSensitiveSettingsUpdates(next),
-        );
-        return next;
-      });
+      const prev = settingsRef.current;
+      const updated = updater(prev);
+      if (updated === prev) return;
+      const next = applyRuntimeSystemDefaults(
+        normalizeSettings(updated),
+        defaultWorkdirRef.current,
+      );
+      settingsRef.current = next;
+      setSettingsState(next);
+      queueSettingsSave(
+        prev,
+        next,
+        "保存设置失败。",
+        hasSettingsSyncChanged(prev, next) || hasSensitiveSettingsUpdates(next),
+      );
     },
     [queueSettingsSave],
   );
@@ -263,6 +273,7 @@ export default function App() {
     const { settings: loaded, defaultWorkdir } = await loadPersistedSettingsWithDefaults();
     defaultWorkdirRef.current = defaultWorkdir;
     const loadedWithDefaults = applyRuntimeSystemDefaults(loaded, defaultWorkdir);
+    settingsRef.current = loadedWithDefaults;
     setSettingsState(loadedWithDefaults);
     setSettingsSaveState({ status: "saved" });
   }, []);
@@ -338,18 +349,18 @@ export default function App() {
           return;
         }
 
-        setSettingsState((prev) => {
-          const next = applyRuntimeSystemDefaults(
-            applyGatewaySettingsSyncPayload(prev, event.payload),
-            defaultWorkdirRef.current,
-          );
-          const publicChanged = hasSettingsSyncChanged(prev, next);
-          if (!publicChanged && !hasSensitiveSettingsUpdatesPayload(event.payload)) {
-            return prev;
-          }
-          queueSettingsSave(prev, next, "同步 WebUI 设置失败。", publicChanged);
-          return next;
-        });
+        const prev = settingsRef.current;
+        const next = applyRuntimeSystemDefaults(
+          applyGatewaySettingsSyncPayload(prev, event.payload),
+          defaultWorkdirRef.current,
+        );
+        const publicChanged = hasSettingsSyncChanged(prev, next);
+        if (!publicChanged && !hasSensitiveSettingsUpdatesPayload(event.payload)) {
+          return;
+        }
+        settingsRef.current = next;
+        setSettingsState(next);
+        queueSettingsSave(prev, next, "同步 WebUI 设置失败。", publicChanged);
       },
     );
 

@@ -36,6 +36,13 @@ export function useGatewaySettingsSync(params: {
   });
   const settingsSaveSequenceRef = useRef(0);
   const settingsSaveChainRef = useRef<Promise<unknown>>(Promise.resolve());
+  // Mirrors `settings` so setSettings/applyGatewaySettings can read the latest value
+  // synchronously without passing a (side-effecting) function into setSettingsState —
+  // React 18 StrictMode double-invokes functional state updaters in development,
+  // which would otherwise run those side effects (and any non-idempotent work like
+  // crypto.randomUUID() inside caller updaters) twice per call.
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
   const [systemThemeVersion, setSystemThemeVersion] = useState(0);
 
   // Monaco reads NLS globals while the lazy editor module imports monaco-editor.
@@ -101,13 +108,13 @@ export function useGatewaySettingsSync(params: {
             void api
               .getSettings()
               .then((payload) => {
-                setSettingsState((current) => {
-                  const refreshed = redactSettingsForWebStorage(
-                    resolveAppWorkspaceProjects(applyGatewaySettingsSyncPayload(current, payload)),
-                  );
-                  persistWebSettings(refreshed);
-                  return refreshed;
-                });
+                const current = settingsRef.current;
+                const refreshed = redactSettingsForWebStorage(
+                  resolveAppWorkspaceProjects(applyGatewaySettingsSyncPayload(current, payload)),
+                );
+                settingsRef.current = refreshed;
+                persistWebSettings(refreshed);
+                setSettingsState(refreshed);
               })
               .catch(() => undefined);
           }
@@ -124,29 +131,29 @@ export function useGatewaySettingsSync(params: {
 
   const applyGatewaySettings = useCallback(
     (payload: GatewaySettingsSyncPayload) => {
-      setSettingsState((prev) => {
-        const rawNext = resolveAppWorkspaceProjects(applyGatewaySettingsSyncPayload(prev, payload));
-        const next = redactSettingsForWebStorage(rawNext);
-        if (!hasSettingsSyncChanged(prev, next)) {
-          return prev;
-        }
-        queueSettingsSave(prev, next, "同步桌面端设置失败。", false);
-        return next;
-      });
+      const prev = settingsRef.current;
+      const rawNext = resolveAppWorkspaceProjects(applyGatewaySettingsSyncPayload(prev, payload));
+      const next = redactSettingsForWebStorage(rawNext);
+      if (!hasSettingsSyncChanged(prev, next)) {
+        return;
+      }
+      settingsRef.current = next;
+      setSettingsState(next);
+      queueSettingsSave(prev, next, "同步桌面端设置失败。", false);
     },
     [queueSettingsSave],
   );
 
   const setSettings = useCallback(
     (updater: (prev: AppSettings) => AppSettings) => {
-      setSettingsState((prev) => {
-        const updated = updater(prev);
-        if (updated === prev) return prev;
-        const rawNext = resolveAppWorkspaceProjects(normalizeSettings(updated));
-        const next = redactSettingsForWebStorage(rawNext);
-        queueSettingsSave(prev, rawNext, "保存 WebUI 设置失败。", true);
-        return next;
-      });
+      const prev = settingsRef.current;
+      const updated = updater(prev);
+      if (updated === prev) return;
+      const rawNext = resolveAppWorkspaceProjects(normalizeSettings(updated));
+      const next = redactSettingsForWebStorage(rawNext);
+      settingsRef.current = next;
+      setSettingsState(next);
+      queueSettingsSave(prev, rawNext, "保存 WebUI 设置失败。", true);
     },
     [queueSettingsSave],
   );
