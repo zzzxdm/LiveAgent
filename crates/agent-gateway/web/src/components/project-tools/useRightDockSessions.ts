@@ -19,6 +19,8 @@ import {
   terminalSessionBelongsToProject,
 } from "./rightDockModel";
 
+const PENDING_CREATE_ACTIVATION_TIMEOUT_MS = 15_000;
+
 type UseRightDockSessionsOptions = {
   client: TerminalClient;
   cwd: string;
@@ -55,6 +57,10 @@ export function useRightDockSessions(options: UseRightDockSessionsOptions) {
   const [shellOptions, setShellOptions] = useState<TerminalShellOption[]>([]);
   const initialTerminalSnapshotsRef = useRef<Map<string, TerminalSnapshot>>(new Map());
   const lastProjectPathKeyRef = useRef(projectPathKey);
+  const pendingCreateActivationRef = useRef<{
+    knownSessionIds: Set<string>;
+    requestedAt: number;
+  } | null>(null);
   const isControlled = externalSessions !== undefined;
   const localSessions = useMemo(
     () =>
@@ -112,12 +118,16 @@ export function useRightDockSessions(options: UseRightDockSessionsOptions) {
         if (current.activeTabId === session.id && tabs === current.tabs && tabOrder === current.tabOrder) {
           return current;
         }
+        // +2, not +1: while this client activates, every other client's
+        // passive reconcile bumps its copy by 1 from the same base version.
+        // mergeSyncedRightDockSettings resolves ties toward the incoming
+        // side, so a tied stale echo would bounce the fresh activation back.
         return {
           ...current,
           activeTabId: session.id,
           tabOrder,
           tabs,
-          stateVersion: current.stateVersion + 1,
+          stateVersion: current.stateVersion + 2,
         };
       });
     },
@@ -270,6 +280,7 @@ export function useRightDockSessions(options: UseRightDockSessionsOptions) {
     if (lastProjectPathKeyRef.current === projectPathKey) return;
     lastProjectPathKeyRef.current = projectPathKey;
     initialTerminalSnapshotsRef.current.clear();
+    pendingCreateActivationRef.current = null;
     setPendingCloseSessionId("");
     setClosingSessionId("");
   }, [projectPathKey]);
@@ -280,6 +291,25 @@ export function useRightDockSessions(options: UseRightDockSessionsOptions) {
       setPendingCloseSessionId("");
     }
   }, [localSessions, pendingCloseSessionId]);
+
+  useEffect(() => {
+    // A terminal created by this client can surface through the shared session
+    // list instead of the create response (created broadcast racing the RPC, or
+    // the response lost to socket recovery) — still switch the dock to it.
+    const pending = pendingCreateActivationRef.current;
+    if (!pending) return;
+    if (Date.now() - pending.requestedAt > PENDING_CREATE_ACTIVATION_TIMEOUT_MS) {
+      pendingCreateActivationRef.current = null;
+      return;
+    }
+    const createdSession = localSessions
+      .filter((session) => !pending.knownSessionIds.has(session.id))
+      .sort((a, b) => b.createdAt - a.createdAt)[0];
+    if (!createdSession) return;
+    pendingCreateActivationRef.current = null;
+    setError(null);
+    activateTerminalSession(createdSession);
+  }, [activateTerminalSession, localSessions]);
 
   const rememberTerminalSnapshot = useCallback(
     (snapshot: TerminalSnapshot) => {
@@ -338,6 +368,10 @@ export function useRightDockSessions(options: UseRightDockSessionsOptions) {
       if (!terminalReady || creating) return;
       setCreating(true);
       setError(null);
+      pendingCreateActivationRef.current = {
+        knownSessionIds: new Set(localSessions.map((session) => session.id)),
+        requestedAt: Date.now(),
+      };
       void client
         .create({
           cwd,
@@ -347,6 +381,7 @@ export function useRightDockSessions(options: UseRightDockSessionsOptions) {
           rows: DEFAULT_TERMINAL_ROWS,
         })
         .then((snapshot) => {
+          pendingCreateActivationRef.current = null;
           rememberTerminalSnapshot(snapshot);
           activateTerminalSession(snapshot.session);
         })
@@ -358,6 +393,7 @@ export function useRightDockSessions(options: UseRightDockSessionsOptions) {
       client,
       creating,
       cwd,
+      localSessions,
       projectPathKey,
       rememberTerminalSnapshot,
       terminalReady,
