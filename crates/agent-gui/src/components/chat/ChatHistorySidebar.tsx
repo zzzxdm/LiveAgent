@@ -381,7 +381,7 @@ const HistoryRow = memo(function HistoryRow(props: {
                 side="right"
                 align="start"
                 sideOffset={8}
-                className="min-w-[10rem] rounded-xl border-border/60 bg-background/95 backdrop-blur-xl"
+                className="sidebar-context-menu min-w-[10rem] rounded-xl border-border/60 bg-background/95 backdrop-blur-xl"
               >
                 {!item.isPending ? (
                   <DropdownMenuItem
@@ -719,7 +719,12 @@ const ProjectRow = memo(function ProjectRow(props: {
                 >
                   <MoreHorizontal className="h-3.5 w-3.5" />
                 </DropdownMenuTrigger>
-                <DropdownMenuContent side="right" align="start" sideOffset={6}>
+                <DropdownMenuContent
+                  side="right"
+                  align="start"
+                  sideOffset={6}
+                  className="sidebar-context-menu"
+                >
                   <DropdownMenuItem onSelect={handleTogglePinned} className="gap-2">
                     {isPinned ? (
                       <PinOff className="h-3.5 w-3.5" />
@@ -1459,7 +1464,12 @@ export const ChatHistorySidebar = memo(function ChatHistorySidebar(props: ChatHi
                   >
                     <MoreHorizontal className="h-3.5 w-3.5" />
                   </DropdownMenuTrigger>
-                  <DropdownMenuContent side="right" align="start" sideOffset={6}>
+                  <DropdownMenuContent
+                    side="right"
+                    align="start"
+                    sideOffset={6}
+                    className="sidebar-context-menu"
+                  >
                     {onCreateProject ? (
                       <DropdownMenuItem onSelect={() => onCreateProject()} className="gap-2">
                         <Plus className="h-3.5 w-3.5" />

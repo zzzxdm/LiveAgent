@@ -688,11 +688,115 @@
     }
   }
 
+  /* Sidebar workspace / recent-conversation context menus: grow out of the
+   * anchor with a soft slide instead of popping in. Radix drives the popup
+   * lifecycle, so enter/exit are keyed off data-state and the closing
+   * animation delays unmount. */
+  .sidebar-context-menu {
+    /* Slide from the anchor side; flipped placements override per data-side. */
+    --sidebar-menu-slide-x: -6px;
+    --sidebar-menu-slide-y: 0px;
+    transform-origin: var(--radix-dropdown-menu-content-transform-origin);
+  }
+
+  .sidebar-context-menu[data-side="left"] {
+    --sidebar-menu-slide-x: 6px;
+  }
+
+  .sidebar-context-menu[data-side="bottom"] {
+    --sidebar-menu-slide-x: 0px;
+    --sidebar-menu-slide-y: -6px;
+  }
+
+  .sidebar-context-menu[data-side="top"] {
+    --sidebar-menu-slide-x: 0px;
+    --sidebar-menu-slide-y: 6px;
+  }
+
+  .sidebar-context-menu[data-state="open"] {
+    animation: sidebarMenuIn 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+    /* Override shadcn default animate-in */
+    --tw-enter-opacity: initial;
+    --tw-enter-scale: initial;
+    --tw-enter-translate-x: initial;
+  }
+
+  .sidebar-context-menu[data-state="closed"] {
+    animation: sidebarMenuOut 0.12s cubic-bezier(0.4, 0, 1, 1);
+    /* Override shadcn default animate-out */
+    --tw-exit-opacity: initial;
+    --tw-exit-scale: initial;
+    --tw-exit-translate-x: initial;
+  }
+
+  @keyframes sidebarMenuIn {
+    from {
+      opacity: 0;
+      transform: translate(var(--sidebar-menu-slide-x), var(--sidebar-menu-slide-y)) scale(0.96);
+    }
+    to {
+      opacity: 1;
+      transform: translate(0, 0) scale(1);
+    }
+  }
+
+  @keyframes sidebarMenuOut {
+    from {
+      opacity: 1;
+      transform: translate(0, 0) scale(1);
+    }
+    to {
+      opacity: 0;
+      transform: translate(
+          calc(var(--sidebar-menu-slide-x) / 2),
+          calc(var(--sidebar-menu-slide-y) / 2)
+        )
+        scale(0.98);
+    }
+  }
+
+  .sidebar-context-menu[data-state="open"] [role="menuitem"] {
+    animation: sidebarMenuItemIn 0.16s cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+
+  .sidebar-context-menu[data-state="open"] [role="menuitem"]:nth-child(2) {
+    animation-delay: 0.02s;
+  }
+  .sidebar-context-menu[data-state="open"] [role="menuitem"]:nth-child(3) {
+    animation-delay: 0.04s;
+  }
+  .sidebar-context-menu[data-state="open"] [role="menuitem"]:nth-child(4) {
+    animation-delay: 0.06s;
+  }
+  .sidebar-context-menu[data-state="open"] [role="menuitem"]:nth-child(n + 5) {
+    animation-delay: 0.08s;
+  }
+
+  @keyframes sidebarMenuItemIn {
+    from {
+      opacity: 0;
+      transform: translate(
+        calc(var(--sidebar-menu-slide-x) / 2),
+        calc(var(--sidebar-menu-slide-y) / 2)
+      );
+    }
+    to {
+      opacity: 1;
+      transform: translate(0, 0);
+    }
+  }
+
   @media (prefers-reduced-motion: reduce) {
     .settings-section-enter,
     .settings-section-title-enter,
     .chat-history-scope-enter {
       animation: none;
+    }
+
+    .sidebar-context-menu,
+    .sidebar-context-menu [role="menuitem"] {
+      animation: none !important;
+      transition: none !important;
     }
 
     .ssh-auth-panel,
