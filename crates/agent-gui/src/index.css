@@ -66,6 +66,10 @@
     /* Sidebar */
     --sidebar-bg: 220 14% 96%;
 
+    /* Hub pages (MCP/Skills) canvas — in dark it sits below --background so
+       background-tinted glass panels read as elevated surfaces. */
+    --hub-canvas: var(--background);
+
     /* Chip / pill buttons (MCP, Skills, 新对话) */
     --chip-bg: 220 13% 91%;
     --chip-bg-hover: 220 13% 86%;
@@ -142,6 +146,9 @@
     --chip-bg-hover: 220 16% 30%;
     /* Send button disabled (dark) */
     --send-disabled-bg: 220 16% 24%;
+
+    /* Hub pages canvas (dark) — deeper than --background for glass elevation */
+    --hub-canvas: 224 24% 6.5%;
 
     /* Chat-specific tokens (dark) */
     --sidebar-bg: 224 22% 11%;
@@ -1717,6 +1724,13 @@
     background: linear-gradient(90deg, transparent, hsl(0 0% 100% / 0.22), transparent);
     animation: hubFrostSheen 2.6s ease-in-out infinite;
     pointer-events: none;
+  }
+  .dark .hub-frost-hero {
+    border-color: hsl(0 0% 100% / 0.08);
+    background: linear-gradient(180deg, hsl(0 0% 100% / 0.06), hsl(0 0% 100% / 0.03));
+    box-shadow:
+      0 1px 0 hsl(0 0% 100% / 0.05) inset,
+      0 8px 28px -18px hsl(0 0% 0% / 0.6);
   }
   .dark .hub-frost-hero::after {
     background: linear-gradient(90deg, transparent, hsl(0 0% 100% / 0.06), transparent);

@@ -43,6 +43,7 @@ import type {
   HistoryList,
   HistoryWorkdirSummary,
 } from "@/lib/gatewayTypes";
+import { useAutomation } from "@/lib/automation";
 import type { GatewaySettingsSyncPayload } from "@/lib/settings/sync";
 import { cn } from "@/lib/shared/utils";
 import { clearToken, loadToken, saveToken } from "@/lib/storage";
@@ -810,6 +811,7 @@ export function StatusDashboardPage() {
     activeWorkspaceProjects.find(
       (project) => project.id === settingsSnapshot?.system.activeWorkspaceProjectId,
     ) ?? activeWorkspaceProjects[0];
+  const automation = useAutomation();
   const selectedModel = settingsSnapshot?.selectedModel ?? null;
   const selectedProvider = selectedModel
     ? (providers.find((provider) => provider.id === selectedModel.customProviderId) ??
@@ -823,8 +825,8 @@ export function StatusDashboardPage() {
   const selectedModelConfig = selectedProvider?.models?.find(
     (model) => model.id === selectedModel?.model,
   );
-  const enabledCronCount = settingsSnapshot?.cron.filter((task) => task.enabled).length ?? 0;
-  const enabledHookCount = settingsSnapshot?.hooks.filter((hook) => hook.enabled).length ?? 0;
+  const enabledCronCount = automation.cron.tasks.filter((task) => task.enabled).length;
+  const enabledHookCount = automation.hooks.hooks.filter((hook) => hook.enabled).length;
   const enabledMcpCount =
     settingsSnapshot?.mcp.servers.filter((server) => server.enabled).length ?? 0;
   const configuredProviderCount =
@@ -985,13 +987,13 @@ export function StatusDashboardPage() {
     },
     {
       label: "Cron Tasks",
-      value: settingsSnapshot ? `${enabledCronCount}/${settingsSnapshot.cron.length}` : "--",
+      value: automation.ready ? `${enabledCronCount}/${automation.cron.tasks.length}` : "--",
       unit: "enabled/total",
       tone: enabledCronCount > 0 ? "amber" : "slate",
     },
     {
       label: "Hooks",
-      value: settingsSnapshot ? `${enabledHookCount}/${settingsSnapshot.hooks.length}` : "--",
+      value: automation.ready ? `${enabledHookCount}/${automation.hooks.hooks.length}` : "--",
       unit: "enabled/total",
     },
     {
