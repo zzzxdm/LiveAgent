@@ -1,6 +1,6 @@
 use std::io;
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 #[cfg(unix)]
 pub(crate) fn configure_child_process_group(command: &mut Command) {
@@ -97,7 +97,10 @@ pub(crate) fn terminate_process_tree_by_pid(pid: u32, grace: Duration) {
     signal_process_tree_by_pid(pid, true);
 }
 
+#[cfg(unix)]
 fn unix_now_ms() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or(Duration::ZERO)
