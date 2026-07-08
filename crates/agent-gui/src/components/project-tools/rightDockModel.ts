@@ -178,17 +178,32 @@ export type RightDockTabSlot = {
 };
 
 // Insertion index for the dragged tab among the remaining tabs, given the
-// dragged tab's current visual center in content coordinates.
+// dragged tab's clamped drag offset. A neighbour is crossed when the dragged
+// tab's LEADING edge passes that neighbour's frozen midpoint: the left edge
+// going leftwards, the right edge going rightwards. Comparing the dragged
+// CENTER against midpoints would leave the first/last slot unreachable
+// whenever the dragged tab is wider than the edge tab, because
+// clampTabDragOffset stops the dragged edges at the strip content bounds and
+// the center then can't travel past the edge tab's midpoint.
 export function computeTabDragInsertIndex(
   slots: readonly RightDockTabSlot[],
   draggedId: string,
-  draggedCenterX: number,
+  draggedOffset: number,
 ) {
+  const draggedIndex = slots.findIndex((slot) => slot.id === draggedId);
+  const dragged = slots[draggedIndex];
+  if (!dragged) return 0;
+  const draggedLeft = dragged.left + draggedOffset;
+  const draggedRight = draggedLeft + dragged.width;
   let index = 0;
-  for (const slot of slots) {
-    if (slot.id === draggedId) continue;
-    if (draggedCenterX < slot.left + slot.width / 2) return index;
-    index += 1;
+  for (let slotIndex = 0; slotIndex < slots.length; slotIndex += 1) {
+    if (slotIndex === draggedIndex) continue;
+    const slot = slots[slotIndex];
+    if (!slot) continue;
+    const midpoint = slot.left + slot.width / 2;
+    const staysBefore =
+      slotIndex < draggedIndex ? midpoint <= draggedLeft : midpoint < draggedRight;
+    if (staysBefore) index += 1;
   }
   return index;
 }

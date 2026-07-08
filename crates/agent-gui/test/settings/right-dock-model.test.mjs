@@ -337,22 +337,45 @@ describe("tab drag engine", () => {
     { id: "c", left: 248, width: 60 },
   ];
 
-  test("computeTabDragInsertIndex maps the dragged center onto frozen slot midpoints", () => {
-    const index = (draggedId, centerX) =>
-      rightDockModel.computeTabDragInsertIndex(slots, draggedId, centerX);
-    // Dragging "a": others are b (center 164) and c (center 278).
-    assert.equal(index("a", 40), 0);
-    assert.equal(index("a", 163), 0);
-    assert.equal(index("a", 165), 1);
-    assert.equal(index("a", 279), 2);
-    // Dragging "c" leftwards: still right of b's midpoint, past it, past a's.
-    assert.equal(index("c", 200), 2);
-    assert.equal(index("c", 100), 1);
-    assert.equal(index("c", 39), 0);
-    // Because the snapshot never changes mid-drag, the same center always
+  test("computeTabDragInsertIndex crosses a neighbour when the dragged edge passes its midpoint", () => {
+    const index = (draggedId, offset) =>
+      rightDockModel.computeTabDragInsertIndex(slots, draggedId, offset);
+    // Dragging "a" rightwards: its right edge (80 + offset) crosses b's
+    // midpoint (164) past offset 84, then c's midpoint (278) past offset 198.
+    assert.equal(index("a", 0), 0);
+    assert.equal(index("a", 84), 0);
+    assert.equal(index("a", 85), 1);
+    assert.equal(index("a", 198), 1);
+    assert.equal(index("a", 199), 2);
+    // Dragging "c" leftwards: its left edge (248 + offset) crosses b's
+    // midpoint at offset -85, then a's midpoint (40) at offset -209.
+    assert.equal(index("c", 0), 2);
+    assert.equal(index("c", -84), 2);
+    assert.equal(index("c", -85), 1);
+    assert.equal(index("c", -208), 1);
+    assert.equal(index("c", -209), 0);
+    // Because the snapshot never changes mid-drag, the same offset always
     // yields the same index — the live-DOM variant oscillated here when the
     // dragged tab was narrower than its neighbour.
-    assert.equal(index("c", 100), index("c", 100));
+    assert.equal(index("c", -100), index("c", -100));
+    // Unknown dragged id degrades to index 0 (the caller guards on the slot).
+    assert.equal(index("ghost", 0), 0);
+  });
+
+  test("computeTabDragInsertIndex reaches both ends within the clamp range", () => {
+    const index = (draggedId, offset) =>
+      rightDockModel.computeTabDragInsertIndex(slots, draggedId, offset);
+    const clamp = (draggedId, offset) =>
+      rightDockModel.clampTabDragOffset(slots, draggedId, offset);
+    // "b" (width 160) is wider than both neighbours. Under the old
+    // center-vs-midpoint rule its center could never pass a's midpoint within
+    // the clamp, making the first slot unreachable.
+    assert.equal(index("b", clamp("b", -9999)), 0);
+    assert.equal(index("b", clamp("b", 9999)), 2);
+    // "a" (width 80) is wider than "c" (width 60): the last slot must still
+    // be reachable at the right clamp limit.
+    assert.equal(index("a", clamp("a", 9999)), 2);
+    assert.equal(index("c", clamp("c", -9999)), 0);
   });
 
   test("applyTabDragInsertIndex produces the final order and clamps the index", () => {

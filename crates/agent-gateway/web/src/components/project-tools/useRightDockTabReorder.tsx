@@ -173,11 +173,7 @@ export function useRightDockTabReorder(options: UseRightDockTabReorderOptions) {
       const pointerDelta = drag.latestClientX - drag.startClientX;
       const scrollDelta = container.scrollLeft - drag.startScrollLeft;
       const offset = clampTabDragOffset(drag.slots, drag.draggedId, pointerDelta + scrollDelta);
-      const insertIndex = computeTabDragInsertIndex(
-        drag.slots,
-        drag.draggedId,
-        dragged.left + offset + dragged.width / 2,
-      );
+      const insertIndex = computeTabDragInsertIndex(drag.slots, drag.draggedId, offset);
       if (offset !== drag.draggedOffset || insertIndex !== drag.insertIndex) {
         drag.draggedOffset = offset;
         drag.insertIndex = insertIndex;
