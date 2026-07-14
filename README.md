@@ -122,13 +122,16 @@ LiveAgent 是一个 **本地优先** 的 AI Agent 桌面客户端。它将大语
 **注意：在部署并使用Nginx反向代理后，设置中Remote页面Gateway地址填写Https地址，端口号填写443。**
 
 ```bash
-# Docker 构建(multi-stage,最终镜像 ~30MB)
-docker build -t liveagent-gateway .
+# 拉取镜像(GitHub Actions 自动构建,multi-arch: amd64 / arm64)
+docker pull ghcr.io/stack-cairn/liveagent-gateway:latest
 
 # 运行(gRPC → 宿主机 50051 ｜ HTTP/WebSocket → 宿主机 50052)
 docker run -p 50051:50051 -p 50052:8080 \
   -e LIVEAGENT_GATEWAY_TOKEN=your-token \
-  liveagent-gateway
+  ghcr.io/stack-cairn/liveagent-gateway:latest
+
+# 也可从源码本地构建(multi-stage,最终镜像 ~30MB)
+docker build -t liveagent-gateway .
 ```
 
 <details>
