@@ -125,7 +125,7 @@ LiveAgent 是一个 **本地优先** 的 AI Agent 桌面客户端。它将大语
 # Docker 构建(multi-stage,最终镜像 ~30MB)
 docker build -t liveagent-gateway .
 
-# 运行(gRPC → 宿主机 50051,HTTP/WebSocket → 宿主机 50052)
+# 运行(gRPC → 宿主机 50051 ｜ HTTP/WebSocket → 宿主机 50052)
 docker run -p 50051:50051 -p 50052:8080 \
   -e LIVEAGENT_GATEWAY_TOKEN=your-token \
   liveagent-gateway
