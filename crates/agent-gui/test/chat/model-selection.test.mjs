@@ -216,6 +216,26 @@ test("resolveActiveModelSelection prefers the conversation selection", () => {
   });
 });
 
+test("history persistence prefers the latest runtime selection over the turn-start model", () => {
+  const turnSelectedModel = { customProviderId: "openai-main", model: "gpt-5" };
+  const runtimeSelectedModel = {
+    customProviderId: "anthropic-main",
+    model: "claude-fable-5",
+  };
+
+  assert.equal(
+    modelSelection.resolvePersistedConversationModelSelection({
+      runtimeSelectedModel,
+      turnSelectedModel,
+    }),
+    runtimeSelectedModel,
+  );
+  assert.equal(
+    modelSelection.resolvePersistedConversationModelSelection({ turnSelectedModel }),
+    turnSelectedModel,
+  );
+});
+
 test("selected model json round-trips and rejects malformed payloads", () => {
   assert.equal(
     settings.serializeSelectedModelJson({ customProviderId: "p1", model: "m1" }),

@@ -23,6 +23,7 @@ import {
   pruneIdleConversationRuntimeCaches,
   setConversationRuntimeCacheEntry,
 } from "../runtime/chatPageRuntime";
+import { resolvePersistedConversationModelSelection } from "../runtime/modelSelection";
 
 type TitleJobRefValue = {
   conversationId: string;
@@ -396,6 +397,10 @@ export function useConversationHistoryActions(params: UseConversationHistoryActi
 
     const updatedAt = Date.now();
     markLocalHistorySnapshotSynced(conversationId, updatedAt);
+    const selectedModelToPersist = resolvePersistedConversationModelSelection({
+      runtimeSelectedModel: conversationRuntimeCacheRef.current.get(conversationId)?.selectedModel,
+      turnSelectedModel: selectedModel,
+    });
 
     try {
       const summary = await persistConversationState({
@@ -404,7 +409,7 @@ export function useConversationHistoryActions(params: UseConversationHistoryActi
         model,
         sessionId,
         cwd,
-        selectedModelJson: serializeSelectedModelJson(selectedModel),
+        selectedModelJson: serializeSelectedModelJson(selectedModelToPersist),
         title: titleToStore,
         createdAt,
         updatedAt,

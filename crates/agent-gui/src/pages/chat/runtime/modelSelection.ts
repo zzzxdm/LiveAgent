@@ -18,6 +18,13 @@ export function resolveActiveModelSelection(
   return conversationSelectedModel ?? settings.selectedModel;
 }
 
+export function resolvePersistedConversationModelSelection(params: {
+  runtimeSelectedModel?: SelectedModel;
+  turnSelectedModel?: SelectedModel;
+}): SelectedModel | undefined {
+  return params.runtimeSelectedModel ?? params.turnSelectedModel;
+}
+
 export function resolveEffectiveChatModelSelection(params: {
   settings: AppSettings;
   conversationSelectedModel?: SelectedModel;
