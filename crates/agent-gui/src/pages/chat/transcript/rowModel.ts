@@ -84,7 +84,13 @@ function computeAssistantEstimate(rounds: (UiRound | LiveRound)[]): number {
       }
     }
   }
-  return estimateAssistantRowHeight({ proseChars, codeLines, codeFences, toolCount, thinkingCount });
+  return estimateAssistantRowHeight({
+    proseChars,
+    codeLines,
+    codeFences,
+    toolCount,
+    thinkingCount,
+  });
 }
 
 function buildReplyText(rounds: (UiRound | LiveRound)[]): string {
