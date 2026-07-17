@@ -250,6 +250,28 @@ fn prompt_run_lifecycle_queue_claim_complete() {
 }
 
 #[test]
+fn complete_prompt_run_input_uses_camel_case_wire_fields() {
+    let input: CompletePromptRunInput = serde_json::from_value(json!({
+        "executionId": "execution-1",
+        "success": true,
+        "durationMs": 1200,
+        "output": "conclusion",
+    }))
+    .expect("deserialize camelCase completion input");
+    assert_eq!(input.execution_id, "execution-1");
+    assert_eq!(input.duration_ms, 1200);
+
+    let error = serde_json::from_value::<CompletePromptRunInput>(json!({
+        "execution_id": "execution-1",
+        "success": true,
+        "duration_ms": 1200,
+        "output": "conclusion",
+    }))
+    .expect_err("reject snake_case completion input");
+    assert!(error.to_string().contains("executionId"));
+}
+
+#[test]
 fn released_prompt_run_returns_to_pending() {
     let (store, task) = store_with_task(create_prompt_task_op("p1"));
     assert!(matches!(

@@ -127,6 +127,17 @@ export type PromptRunRequest = {
   leaseExpiresAt: number;
 };
 
+export type CompletePromptRunInput = {
+  executionId: string;
+  success: boolean;
+  durationMs: number;
+  output: string;
+};
+
+export type PromptCompletionResponse = {
+  status: "completed" | "already_finished";
+};
+
 export type AutomationOp =
   | { op: "create"; item: Record<string, unknown> }
   | { op: "update"; id: string; patch: Record<string, unknown> }

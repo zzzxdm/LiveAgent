@@ -9,11 +9,14 @@ import { listen } from "@tauri-apps/api/event";
 import type {
   AutomationApplyInput,
   AutomationSnapshot,
+  CompletePromptRunInput,
   CronApplyResponse,
   CronRunRecord,
   CronSnapshot,
   HooksApplyResponse,
   HooksSnapshot,
+  PromptCompletionResponse,
+  PromptRunRequest,
 } from "./types";
 
 const CRON_CHANGED_EVENT = "automation:cron-changed";
@@ -46,6 +49,20 @@ export const backend = {
 
   clearRuns(taskId: string): Promise<number> {
     return invoke<number>("automation_clear_runs", { task_id: taskId });
+  },
+
+  claimPromptRuns(): Promise<PromptRunRequest[]> {
+    return invoke<PromptRunRequest[]>("automation_claim_prompt_runs");
+  },
+
+  releasePromptRun(executionId: string): Promise<void> {
+    return invoke<void>("automation_release_prompt_run", {
+      execution_id: executionId,
+    });
+  },
+
+  completePromptRun(input: CompletePromptRunInput): Promise<PromptCompletionResponse> {
+    return invoke<PromptCompletionResponse>("automation_complete_prompt_run", { input });
   },
 
   async validateCronExpression(expression: string): Promise<void> {
