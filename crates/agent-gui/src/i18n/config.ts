@@ -1063,8 +1063,23 @@ export const translations: Record<Locale, Record<string, string>> = {
     /* ── Settings System ── */
     "settings.appearance": "外观主题",
     "settings.appearanceDesc": "选择应用的颜色主题，偏好会自动保存。",
+    "settings.systemProxy": "系统代理",
+    "settings.systemProxyEnable": "启用系统代理",
+    "settings.systemProxyDesc":
+      "生效范围：本地命令环境变量（Bash / 后台任务 / 自动化脚本）、勾选“应用系统代理”的供应商请求、更新检查与技能下载。",
+    "settings.systemProxyInvalid":
+      "代理已启用，请填写有效的代理地址和端口；配置有效前相关请求将直接报错。",
+    "settings.systemProxyType": "代理类型",
+    "settings.systemProxyHost": "代理地址",
+    "settings.systemProxyPort": "端口",
+    "settings.systemProxyUsername": "用户名（可选）",
+    "settings.systemProxyPassword": "密码（可选）",
+    "settings.systemProxyPasswordConfigured": "代理密码已保存",
+    "settings.systemProxyPasswordClear": "清除",
+    "settings.providerUseSystemProxy": "应用系统代理",
+    "settings.providerUseSystemProxyDesc":
+      "该供应商的模型请求经系统设置中配置的系统代理出网；系统代理未启用时保持直连。",
     "settings.closeWindowBehavior": "关闭窗口",
-    "settings.closeWindowBehaviorDesc": "点击窗口关闭按钮时：隐藏到系统托盘，或直接退出应用。",
     "settings.closeWindowMinimize": "最小化到托盘",
     "settings.closeWindowMinimizeDesc": "关闭窗口后应用继续在后台运行，可从托盘恢复。",
     "settings.closeWindowExit": "退出应用",
@@ -1079,7 +1094,6 @@ export const translations: Record<Locale, Record<string, string>> = {
     "settings.chinese": "简体中文",
     "settings.english": "English",
     "settings.fontSize": "字体大小",
-    "settings.fontSizeDesc": "分别调整会话列表、聊天区域与工具面板的文字大小。",
     "settings.fontSizeSidebar": "会话列表",
     "settings.fontSizeChat": "聊天区域",
     "settings.fontSizeRightDock": "工具面板",
@@ -1089,8 +1103,6 @@ export const translations: Record<Locale, Record<string, string>> = {
     "settings.fontSizeXLarge": "特大",
     "settings.fontSizeReset": "重置",
     "settings.executionMode": "执行模式",
-    "settings.executionModeDesc":
-      "选择当前对话的运行方式。Chat 模式仅输出文本，Agent 模式允许模型调用工具执行操作。",
     "settings.chatMode": "Chat 模式",
     "settings.chatModeDesc": "纯文本对话，模型只输出文本与 Markdown",
     "settings.agentMode": "Agent 模式",
@@ -2907,9 +2919,23 @@ export const translations: Record<Locale, Record<string, string>> = {
     "settings.appearance": "Appearance",
     "settings.appearanceDesc":
       "Choose the color theme for the application. Your preference will be saved automatically.",
+    "settings.systemProxy": "System Proxy",
+    "settings.systemProxyEnable": "Enable system proxy",
+    "settings.systemProxyDesc":
+      "Applies to: local command environment (Bash / background tasks / automation scripts), providers with “Use system proxy” checked, update checks and skill downloads.",
+    "settings.systemProxyInvalid":
+      "The proxy is enabled. Enter a valid host and port; affected requests fail until the configuration is valid.",
+    "settings.systemProxyType": "Proxy type",
+    "settings.systemProxyHost": "Proxy host",
+    "settings.systemProxyPort": "Port",
+    "settings.systemProxyUsername": "Username (optional)",
+    "settings.systemProxyPassword": "Password (optional)",
+    "settings.systemProxyPasswordConfigured": "Proxy password saved",
+    "settings.systemProxyPasswordClear": "Clear",
+    "settings.providerUseSystemProxy": "Use system proxy",
+    "settings.providerUseSystemProxyDesc":
+      "Route this provider's model requests through the system proxy configured in System settings. Falls back to a direct connection while the system proxy is disabled.",
     "settings.closeWindowBehavior": "Close Window",
-    "settings.closeWindowBehaviorDesc":
-      "When you click the window close button: hide to the system tray, or quit the app.",
     "settings.closeWindowMinimize": "Minimize to tray",
     "settings.closeWindowMinimizeDesc":
       "Keep the app running in the background and restore it from the tray.",
@@ -2926,8 +2952,6 @@ export const translations: Record<Locale, Record<string, string>> = {
     "settings.chinese": "简体中文",
     "settings.english": "English",
     "settings.fontSize": "Font Size",
-    "settings.fontSizeDesc":
-      "Adjust text size for the sidebar, chat area, and tools panel independently.",
     "settings.fontSizeSidebar": "Sidebar",
     "settings.fontSizeChat": "Chat Area",
     "settings.fontSizeRightDock": "Tools Panel",
@@ -2937,8 +2961,6 @@ export const translations: Record<Locale, Record<string, string>> = {
     "settings.fontSizeXLarge": "Extra Large",
     "settings.fontSizeReset": "Reset",
     "settings.executionMode": "Execution Mode",
-    "settings.executionModeDesc":
-      "Choose how the current conversation runs. Chat mode outputs text only; Agent mode allows the model to call tools.",
     "settings.chatMode": "Chat Mode",
     "settings.chatModeDesc": "Plain text conversation, model outputs text and Markdown only",
     "settings.agentMode": "Agent Mode",
