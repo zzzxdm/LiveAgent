@@ -252,7 +252,7 @@ function CheckpointCard(props: {
     <div className="checkpoint-row flex w-full max-w-full items-start gap-3">
       <div className="checkpoint-row-spacer mt-0.5 h-6 w-6 shrink-0" aria-hidden="true" />
       <div className="checkpoint-row-body min-w-0 flex-1">
-        <div className="checkpoint-card w-full overflow-hidden rounded-[14px] border border-black/[0.06] bg-white/[0.72] shadow-[0_1px_3px_rgba(0,0,0,0.04),0_4px_12px_rgba(0,0,0,0.03)] backdrop-blur-xl dark:border-white/[0.1] dark:bg-white/[0.06] dark:shadow-[0_1px_3px_rgba(0,0,0,0.2),0_4px_12px_rgba(0,0,0,0.15)]">
+        <div className="checkpoint-card w-full overflow-hidden rounded-[14px] border border-black/[0.06] bg-white/[0.85] shadow-[0_1px_3px_rgba(0,0,0,0.04),0_4px_12px_rgba(0,0,0,0.03)] dark:border-white/[0.1] dark:bg-white/[0.06] dark:shadow-[0_1px_3px_rgba(0,0,0,0.2),0_4px_12px_rgba(0,0,0,0.15)]">
           <button
             type="button"
             aria-expanded={isExpanded}
@@ -368,7 +368,7 @@ function GatewayUserImageAttachmentCard(props: {
     <div
       title={file.relativePath}
       className={cn(
-        "group relative overflow-hidden rounded-xl border border-white/60 bg-white/50 shadow-[0_1px_3px_rgba(0,0,0,0.06),0_1px_2px_rgba(0,0,0,0.04)] backdrop-blur-xl transition-shadow hover:shadow-[0_2px_8px_rgba(0,0,0,0.1)] dark:border-white/[0.12] dark:bg-white/[0.06]",
+        "group relative overflow-hidden rounded-xl border border-white/60 bg-white/75 shadow-[0_1px_3px_rgba(0,0,0,0.06),0_1px_2px_rgba(0,0,0,0.04)] transition-shadow hover:shadow-[0_2px_8px_rgba(0,0,0,0.1)] dark:border-white/[0.12] dark:bg-white/[0.06]",
         compact ? "min-w-0 basis-[calc(33.333%-5.33px)] grow" : "w-full max-w-[280px]",
       )}
     >
@@ -453,7 +453,7 @@ function GatewayUserFileAttachmentCard(props: {
     <div
       title={file.relativePath}
       className={cn(
-        "group relative flex items-center gap-2 rounded-xl border border-white/60 bg-white/50 px-2.5 py-2 text-left shadow-[0_1px_3px_rgba(0,0,0,0.06),0_1px_2px_rgba(0,0,0,0.04)] backdrop-blur-xl transition-shadow hover:shadow-[0_2px_8px_rgba(0,0,0,0.1)] dark:border-white/[0.12] dark:bg-white/[0.06]",
+        "group relative flex items-center gap-2 rounded-xl border border-white/60 bg-white/75 px-2.5 py-2 text-left shadow-[0_1px_3px_rgba(0,0,0,0.06),0_1px_2px_rgba(0,0,0,0.04)] transition-shadow hover:shadow-[0_2px_8px_rgba(0,0,0,0.1)] dark:border-white/[0.12] dark:bg-white/[0.06]",
         compact ? "min-w-0 basis-[calc(33.333%-5.33px)] grow" : "w-full",
       )}
     >
