@@ -4,6 +4,7 @@ import { useLocale } from "../../../i18n";
 import type { ToolTraceItem } from "../../../lib/chat/uiMessages";
 import { cn } from "../../../lib/shared/utils";
 import { getToolDisplayName, getToolMeta, getToolTraceKey } from "./assistantBubbleUtils";
+import { LazyCollapse } from "./LazyCollapse";
 import { AssistantStatus } from "./StatusText";
 import { areToolTraceItemsEqual, MemoToolCallItem } from "./ToolCallItem";
 
@@ -132,14 +133,8 @@ function ToolTraceGroupInner(props: {
         </div>
       </button>
 
-      <div
-        aria-hidden={!open}
-        className={cn(
-          "grid transition-[grid-template-rows,opacity] duration-200 ease-out",
-          open ? "grid-rows-[1fr] opacity-100" : "pointer-events-none grid-rows-[0fr] opacity-0",
-        )}
-      >
-        <div className="min-h-0 overflow-hidden">
+      <LazyCollapse open={open}>
+        {() => (
           <div className="space-y-0.5 pb-2 pl-[22px] pt-1">
             {items.map((item, index) => (
               <MemoToolCallItem
@@ -153,8 +148,8 @@ function ToolTraceGroupInner(props: {
               />
             ))}
           </div>
-        </div>
-      </div>
+        )}
+      </LazyCollapse>
     </div>
   );
 }

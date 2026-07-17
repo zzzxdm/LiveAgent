@@ -29,6 +29,7 @@ import {
   type MetaTag,
 } from "./assistantBubbleUtils";
 import { FileToolArgsDisplay } from "./FileToolArgs";
+import { LazyCollapse } from "./LazyCollapse";
 import { AssistantStatus } from "./StatusText";
 import { sanitizeTodoItems, TodoListView } from "./TodoListView";
 import {
@@ -457,16 +458,8 @@ function ToolCallItem({ item, isRunning }: { item: ToolTraceItem; isRunning?: bo
         </div>
       </button>
 
-      <div
-        aria-hidden={!open}
-        className={cn(
-          "grid transition-[grid-template-rows,opacity] duration-200 ease-out",
-          open && canExpand
-            ? "grid-rows-[1fr] opacity-100"
-            : "pointer-events-none grid-rows-[0fr] opacity-0",
-        )}
-      >
-        <div className="min-h-0 overflow-hidden">
+      <LazyCollapse open={open && canExpand}>
+        {() => (
           <div className="space-y-3 pb-2 pl-[22px] pt-1">
             {shouldShowArgs ? (
               <ToolSection
@@ -536,8 +529,8 @@ function ToolCallItem({ item, isRunning }: { item: ToolTraceItem; isRunning?: bo
               </ToolSection>
             ) : null}
           </div>
-        </div>
-      </div>
+        )}
+      </LazyCollapse>
     </div>
   );
 }
