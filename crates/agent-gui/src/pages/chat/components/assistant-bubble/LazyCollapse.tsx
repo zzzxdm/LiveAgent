@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useState } from "react";
 
 import { cn } from "../../../../lib/shared/utils";
 
@@ -8,30 +8,16 @@ import { cn } from "../../../../lib/shared/utils";
 // scrolling a settled transcript cheap; once revealed it keeps its state
 // exactly like the old always-mounted markup (the settle zero-remount
 // invariant holds because the latch lives in components whose keys carry
-// over). The grid-rows transition needs the body in the DOM before it can
-// animate, so a mounting expand renders collapsed and flips open on the next
-// frame; reduced-motion expands instantly.
-
-// Pure decision for the open/renderedOpen reconciliation, exported for tests.
-export function resolveLazyCollapseTransition(params: {
-  open: boolean;
-  renderedOpen: boolean;
-  reducedMotion: boolean;
-}): "none" | "collapse" | "expand-now" | "expand-next-frame" {
-  const { open, renderedOpen, reducedMotion } = params;
-  if (open === renderedOpen) return "none";
-  if (!open) return "collapse";
-  return reducedMotion ? "expand-now" : "expand-next-frame";
-}
-
-function prefersReducedMotion() {
-  return (
-    typeof window !== "undefined" &&
-    typeof window.matchMedia === "function" &&
-    window.matchMedia("(prefers-reduced-motion: reduce)").matches
-  );
-}
-
+// over).
+//
+// The height change lands in a single commit — deliberately no
+// grid-template-rows transition. A layout animation resizes the virtualized
+// row on every frame, and each of those frames costs a measurement pass over
+// the rows below plus a React commit and scroll compensation: the longer the
+// conversation, the worse the jank. Instead the revealed content plays a
+// compositor-only opacity/translate entrance (the same snap-layout,
+// animate-content pattern as the right dock's collapse), so the virtualizer
+// sees exactly one resize per toggle.
 export function LazyCollapse(props: {
   open: boolean;
   className?: string;
@@ -39,40 +25,27 @@ export function LazyCollapse(props: {
 }) {
   const { open, className, children } = props;
   const [mounted, setMounted] = useState(open);
-  const [renderedOpen, setRenderedOpen] = useState(open);
   if (open && !mounted) {
-    // Render-phase latch: the body must be in this commit's DOM so the
-    // next-frame flip has real content to animate to.
+    // Render-phase latch: the body mounts in the same commit as the expand.
     setMounted(true);
   }
 
-  useEffect(() => {
-    const transition = resolveLazyCollapseTransition({
-      open,
-      renderedOpen,
-      reducedMotion: prefersReducedMotion(),
-    });
-    if (transition === "none") return;
-    if (transition !== "expand-next-frame") {
-      setRenderedOpen(open);
-      return;
-    }
-    const frame = requestAnimationFrame(() => setRenderedOpen(true));
-    return () => cancelAnimationFrame(frame);
-  }, [open, renderedOpen]);
-
   return (
     <div
-      aria-hidden={!renderedOpen}
+      aria-hidden={!open}
       className={cn(
-        "grid transition-[grid-template-rows,opacity] duration-200 ease-out",
-        renderedOpen
-          ? "grid-rows-[1fr] opacity-100"
-          : "pointer-events-none grid-rows-[0fr] opacity-0",
+        "grid",
+        open ? "grid-rows-[1fr]" : "pointer-events-none grid-rows-[0fr]",
         className,
       )}
     >
-      <div className="min-h-0 overflow-hidden">{mounted ? children() : null}</div>
+      <div className="min-h-0 overflow-hidden">
+        {mounted ? (
+          // Dropping the class on collapse resets the CSS animation, so
+          // every re-expand replays the entrance.
+          <div className={open ? "lazy-collapse-reveal" : "invisible"}>{children()}</div>
+        ) : null}
+      </div>
     </div>
   );
 }

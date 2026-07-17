@@ -1280,11 +1280,11 @@
   @keyframes checkpointExpandIn {
     from {
       opacity: 0;
-      max-height: 0;
+      transform: translateY(-4px);
     }
     to {
       opacity: 1;
-      max-height: 600px;
+      transform: translateY(0);
     }
   }
 
@@ -1338,13 +1338,15 @@
     }
   }
 
-  .tool-expand {
+  .tool-expand,
+  .lazy-collapse-reveal {
     animation: toolExpandIn 0.22s cubic-bezier(0.16, 1, 0.3, 1);
   }
 
   /* Respect reduced motion */
   @media (prefers-reduced-motion: reduce) {
-    .tool-expand {
+    .tool-expand,
+    .lazy-collapse-reveal {
       animation: none !important;
     }
   }
