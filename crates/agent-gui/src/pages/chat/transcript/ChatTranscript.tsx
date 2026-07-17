@@ -198,7 +198,10 @@ export const ChatTranscript = memo(function ChatTranscript(props: ChatTranscript
         <div className="mx-auto w-full max-w-[768px] px-5 py-4">
           {showNoModelsState || showStartChatState ? (
             <div className="flex min-h-[calc(100vh-220px)] flex-col items-center justify-center">
+              {/* Keyed per conversation so the hero entrance replays when
+                  switching between empty conversations, not just on mount. */}
               <ChatEmptyState
+                key={conversationId ?? "empty"}
                 variant={showNoModelsState ? "no-models" : "start-chat"}
                 onOpenSettings={onOpenSettings}
                 onSuggestionSelect={onSuggestionSelect}

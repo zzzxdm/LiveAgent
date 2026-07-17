@@ -1621,7 +1621,10 @@ export function GatewayTranscript({
     return (
       <div className="gateway-transcript-shell">
         <div className="gateway-chat-column gateway-empty-state">
+          {/* Keyed per conversation so the hero entrance replays when
+              switching between empty conversations, not just on mount. */}
           <ChatEmptyState
+            key={conversationId ?? "shared"}
             variant={showNoModelsState ? "no-models" : "start-chat"}
             onOpenSettings={onOpenSettings}
             onSuggestionSelect={readOnly ? undefined : onSuggestionSelect}
