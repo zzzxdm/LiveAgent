@@ -26,7 +26,14 @@ import {
 } from "../../components/ui/select";
 import { Textarea } from "../../components/ui/textarea";
 import { useLocale } from "../../i18n";
-import { type CronTask, type CronTaskType, validateCronExpression } from "../../lib/automation";
+import {
+  type CronTask,
+  type CronTaskType,
+  DEFAULT_CRON_TIMEOUT_SECONDS,
+  MAX_CRON_TIMEOUT_SECONDS,
+  MIN_CRON_TIMEOUT_SECONDS,
+  validateCronExpression,
+} from "../../lib/automation";
 import { parseModelValue, toModelValue } from "../../lib/providers/llm";
 import { type ExecutionMode, isAgentExecutionMode, type ProviderId } from "../../lib/settings";
 import { useModalMotion } from "../../lib/shared/modalMotion";
@@ -64,6 +71,27 @@ const FOLLOW_ACTIVE_WORKSPACE_VALUE = "__follow-active-workspace__";
  * the form offers a free-form path input alongside the workspace list.
  */
 const CUSTOM_WORKDIR_VALUE = "__custom-workdir__";
+
+/**
+ * Windows paths reach us in several spellings ("\\" vs "/", drive-letter
+ * case, trailing separators) depending on which picker produced them, so a
+ * pinned workspace path must match its workspace entry shape-insensitively.
+ * POSIX paths stay case-sensitive.
+ */
+function comparableWorkdirPath(path: string) {
+  const normalized = path.trim().replace(/\\/g, "/");
+  if (!normalized) return "";
+  const isWindowsShape = /^[A-Za-z]:/.test(normalized) || normalized.startsWith("//");
+  const comparable = isWindowsShape ? normalized.toLowerCase() : normalized;
+  if (comparable === "/" || /^[a-z]:\/$/.test(comparable)) return comparable;
+  return comparable.replace(/\/+$/, "");
+}
+
+function findWorkspaceOptionByPath(options: CronWorkspaceOption[], path: string) {
+  const target = comparableWorkdirPath(path);
+  if (!target) return null;
+  return options.find((option) => comparableWorkdirPath(option.path) === target) ?? null;
+}
 
 const CRON_REASONING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
@@ -127,6 +155,12 @@ export function CronTaskModal({
   const [remainingExecutions, setRemainingExecutions] = useState(
     initialData?.remainingExecutions == null ? "" : String(initialData.remainingExecutions),
   );
+  // Prefilled with the effective value: tasks saved before the field existed
+  // run with the default, so showing it is truthful — and clearing the input
+  // simply falls back to the same default on save.
+  const [timeoutSeconds, setTimeoutSeconds] = useState(
+    String(initialData?.timeoutSeconds ?? DEFAULT_CRON_TIMEOUT_SECONDS),
+  );
   const [type, setType] = useState<CronTaskType>(initialData?.type ?? "bash");
   const [scriptText, setScriptText] = useState(initialData?.script ?? "");
   const [requests, setRequests] = useState<HttpRequestDraft[]>(() => {
@@ -140,15 +174,20 @@ export function CronTaskModal({
     const initial = initialData?.reasoning ?? "";
     return isCronReasoningLevel(initial) ? initial : DEFAULT_CRON_REASONING;
   });
-  const [workdir, setWorkdir] = useState(initialData?.workdir ?? "");
+  // A Windows pin may spell the same directory differently than the
+  // workspace list ("\\" vs "/", drive-letter case); snap it to the list
+  // entry's exact spelling so the Select matches it by value.
+  const [workdir, setWorkdir] = useState(() => {
+    const initialWorkdir = initialData?.workdir ?? "";
+    if (!initialWorkdir) return "";
+    return findWorkspaceOptionByPath(workspaceOptions, initialWorkdir)?.path ?? initialWorkdir;
+  });
   // A pinned path outside the workspace list (e.g. set by the CronTaskManager
   // tool, or whose workspace was removed) opens in custom-path mode so the
   // user sees and can edit the raw path.
   const [customWorkdir, setCustomWorkdir] = useState(() => {
     const initialWorkdir = initialData?.workdir ?? "";
-    return Boolean(
-      initialWorkdir && !workspaceOptions.some((option) => option.path === initialWorkdir),
-    );
+    return Boolean(initialWorkdir && !findWorkspaceOptionByPath(workspaceOptions, initialWorkdir));
   });
   const [selectedModelValue, setSelectedModelValue] = useState(() =>
     initialData?.selectedModel
@@ -176,7 +215,7 @@ export function CronTaskModal({
 
   const selectedWorkspaceOption = customWorkdir
     ? null
-    : (workspaceOptions.find((option) => option.path === workdir) ?? null);
+    : findWorkspaceOptionByPath(workspaceOptions, workdir);
 
   const formReady =
     Boolean(name.trim()) &&
@@ -199,6 +238,17 @@ export function CronTaskModal({
         (!Number.isSafeInteger(parsedRemainingExecutions) || parsedRemainingExecutions < 0)
       ) {
         throw new Error(t("settings.cronRemainingExecutionsInvalid"));
+      }
+      const trimmedTimeoutSeconds = timeoutSeconds.trim();
+      const parsedTimeoutSeconds = trimmedTimeoutSeconds
+        ? Number(trimmedTimeoutSeconds)
+        : DEFAULT_CRON_TIMEOUT_SECONDS;
+      if (
+        !Number.isSafeInteger(parsedTimeoutSeconds) ||
+        parsedTimeoutSeconds < MIN_CRON_TIMEOUT_SECONDS ||
+        parsedTimeoutSeconds > MAX_CRON_TIMEOUT_SECONDS
+      ) {
+        throw new Error(t("settings.cronTimeoutSecondsInvalid"));
       }
 
       await validateCronExpression(cron.trim());
@@ -230,6 +280,7 @@ export function CronTaskModal({
         description: description.trim(),
         cron: cron.trim(),
         remainingExecutions: parsedRemainingExecutions,
+        timeoutSeconds: parsedTimeoutSeconds,
         type,
         script: type === "bash" ? trimmedScript : undefined,
         requests: type === "http" ? parseHttpRequestDrafts(requests, t) : undefined,
@@ -344,18 +395,36 @@ export function CronTaskModal({
                   />
                 </div>
               </div>
-              <div className="space-y-1.5">
-                <Label className="text-xs font-medium text-muted-foreground">
-                  {t("settings.cronTaskDesc")}
-                </Label>
-                <Input
-                  value={description}
-                  placeholder={t("settings.cronTaskDescPlaceholder")}
-                  onChange={(e) => {
-                    setFormError(null);
-                    setDescription(e.currentTarget.value);
-                  }}
-                />
+              <div className="settings-form-grid grid gap-4 sm:grid-cols-[minmax(0,1fr)_9rem]">
+                <div className="space-y-1.5">
+                  <Label className="text-xs font-medium text-muted-foreground">
+                    {t("settings.cronTaskDesc")}
+                  </Label>
+                  <Input
+                    value={description}
+                    placeholder={t("settings.cronTaskDescPlaceholder")}
+                    onChange={(e) => {
+                      setFormError(null);
+                      setDescription(e.currentTarget.value);
+                    }}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-xs font-medium text-muted-foreground">
+                    {t("settings.cronTimeoutSeconds")}
+                  </Label>
+                  <Input
+                    value={timeoutSeconds}
+                    inputMode="numeric"
+                    placeholder={String(DEFAULT_CRON_TIMEOUT_SECONDS)}
+                    onChange={(e) => {
+                      const next = e.currentTarget.value.trim();
+                      if (next && !/^\d+$/.test(next)) return;
+                      setFormError(null);
+                      setTimeoutSeconds(next);
+                    }}
+                  />
+                </div>
               </div>
             </div>
           </div>
