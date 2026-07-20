@@ -82,7 +82,7 @@ function singleDollarClose(value: string, openIndex: number) {
     if (character !== "$" || isEscaped(value, index)) continue;
     if (dollarRunLength(value, index) > 1) return -1;
     const next = value[index + 1];
-    const closes = !/\s/.test(value[index - 1]) && (next === undefined || !/[0-9]/.test(next));
+    const closes = !/[ \t]/.test(value[index - 1]) && (next === undefined || !/[0-9]/.test(next));
     return closes ? index : -1;
   }
   return -1;
